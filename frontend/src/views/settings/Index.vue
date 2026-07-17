@@ -6,21 +6,32 @@
           <template #header>
             <div class="card-header">
               <span>OKX API 凭证配置</span>
-              <el-tag v-if="credential?.id" type="success">已配置</el-tag>
-              <el-tag v-else type="info">未配置</el-tag>
+              <el-radio-group v-model="activeEnv" size="small" @change="onEnvChange">
+                <el-radio-button label="demo">模拟盘</el-radio-button>
+                <el-radio-button label="live">实盘</el-radio-button>
+              </el-radio-group>
             </div>
           </template>
 
+          <el-alert
+            v-if="activeEnv === 'live'"
+            title="当前为实盘环境，请确认 API Key 具有正确权限"
+            type="warning"
+            :closable="false"
+            show-icon
+            style="margin-bottom: 20px;"
+          />
+
           <el-form
             ref="formRef"
-            :model="form"
+            :model="forms[activeEnv]"
             :rules="rules"
             label-width="120px"
             label-position="right"
           >
             <el-form-item label="API Key" prop="api_key">
               <el-input
-                v-model="form.api_key"
+                v-model="forms[activeEnv].api_key"
                 placeholder="请输入 OKX API Key"
                 show-password
                 clearable
@@ -29,7 +40,7 @@
 
             <el-form-item label="Secret Key" prop="api_secret">
               <el-input
-                v-model="form.api_secret"
+                v-model="forms[activeEnv].api_secret"
                 placeholder="请输入 OKX Secret Key"
                 show-password
                 clearable
@@ -38,23 +49,16 @@
 
             <el-form-item label="Passphrase" prop="passphrase">
               <el-input
-                v-model="form.passphrase"
+                v-model="forms[activeEnv].passphrase"
                 placeholder="请输入 API Key 的 Passphrase"
                 show-password
                 clearable
               />
             </el-form-item>
 
-            <el-form-item label="交易环境" prop="flag">
-              <el-radio-group v-model="form.flag">
-                <el-radio-button label="1">模拟盘 (Demo)</el-radio-button>
-                <el-radio-button label="0">实盘 (Live)</el-radio-button>
-              </el-radio-group>
-            </el-form-item>
-
             <el-form-item label="启用状态">
               <el-switch
-                v-model="form.is_active"
+                v-model="forms[activeEnv].is_active"
                 active-text="启用"
                 inactive-text="禁用"
               />
@@ -99,10 +103,10 @@
             show-icon
           >
             <div class="tips">
-              <p>1. API 凭证保存在 MySQL 数据库中。</p>
-              <p>2. 建议仅配置带读取/交易权限的 Key，避免使用提现权限。</p>
-              <p>3. 首次配置建议先用模拟盘验证。</p>
-              <p>4. 修改凭证后系统会自动重置 OKX 客户端。</p>
+              <p>1. 模拟盘和实盘使用不同的 API Key，请分开配置。</p>
+              <p>2. API 凭证保存在 MySQL 数据库中。</p>
+              <p>3. 建议仅配置带读取/交易权限的 Key，避免使用提现权限。</p>
+              <p>4. 切换环境或修改凭证后系统会自动重置 OKX 客户端。</p>
             </div>
           </el-alert>
         </el-card>
@@ -116,26 +120,24 @@ import { ref, reactive, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Check, Connection } from '@element-plus/icons-vue'
 import { credentialApi } from '@/api/credential.js'
+import { useConnectionStore } from '@/stores/connection.js'
 
+const connectionStore = useConnectionStore()
 const formRef = ref(null)
-const credential = ref(null)
+const activeEnv = ref('demo')
 const saving = ref(false)
 const testing = ref(false)
 const connectionResult = ref(null)
 
-const form = reactive({
-  api_key: '',
-  api_secret: '',
-  passphrase: '',
-  flag: '1',
-  is_active: true,
+const forms = reactive({
+  demo: { api_key: '', api_secret: '', passphrase: '', is_active: true },
+  live: { api_key: '', api_secret: '', passphrase: '', is_active: true },
 })
 
 const rules = {
   api_key: [{ required: true, message: '请输入 API Key', trigger: 'blur' }],
   api_secret: [{ required: true, message: '请输入 Secret Key', trigger: 'blur' }],
   passphrase: [{ required: true, message: '请输入 Passphrase', trigger: 'blur' }],
-  flag: [{ required: true, message: '请选择交易环境', trigger: 'change' }],
 }
 
 const connectionStatus = computed(() => {
@@ -151,21 +153,22 @@ const connectionStatus = computed(() => {
   return { icon: 'error', title: '连接失败', subTitle: connectionResult.value.error || '请检查凭证配置' }
 })
 
-async function loadCredential() {
+async function loadCredentials() {
   try {
-    credential.value = await credentialApi.active()
-    Object.assign(form, {
-      api_key: credential.value.api_key || '',
-      api_secret: credential.value.api_secret || '',
-      passphrase: credential.value.passphrase || '',
-      flag: credential.value.flag || '1',
-      is_active: credential.value.is_active !== false,
-    })
+    const [demo, live] = await Promise.all([
+      credentialApi.byEnv('demo').catch(() => null),
+      credentialApi.byEnv('live').catch(() => null),
+    ])
+    if (demo) Object.assign(forms.demo, demo)
+    if (live) Object.assign(forms.live, live)
   } catch (err) {
-    if (err.message !== '未配置 OKX 凭证' && !err.message?.includes('404')) {
-      ElMessage.warning(err.message)
-    }
+    ElMessage.warning(err.message)
   }
+}
+
+function onEnvChange() {
+  connectionResult.value = null
+  formRef.value?.clearValidate()
 }
 
 async function onSubmit() {
@@ -174,13 +177,17 @@ async function onSubmit() {
 
   saving.value = true
   try {
-    const payload = { ...form, name: 'default' }
-    if (credential.value?.id) {
-      credential.value = await credentialApi.update(credential.value.id, payload)
-    } else {
-      credential.value = await credentialApi.create(payload)
+    const payload = {
+      ...forms[activeEnv.value],
+      name: activeEnv.value,
+      flag: activeEnv.value === 'demo' ? '1' : '0',
     }
-    ElMessage.success('凭证保存成功')
+    await credentialApi.update(activeEnv.value, payload)
+    ElMessage.success(`${activeEnv.value === 'demo' ? '模拟盘' : '实盘'}凭证保存成功`)
+    // 如果保存的是当前全局环境，更新连接状态
+    if (activeEnv.value === connectionStore.environment) {
+      await connectionStore.checkConnection().catch(() => {})
+    }
   } catch (err) {
     ElMessage.error(err.message)
   } finally {
@@ -191,26 +198,39 @@ async function onSubmit() {
 async function onTestConnection() {
   testing.value = true
   try {
-    connectionResult.value = await credentialApi.testConnection()
+    connectionResult.value = await credentialApi.testConnection(activeEnv.value)
     if (connectionResult.value.connected) {
-      ElMessage.success('OKX API 连接成功')
+      ElMessage.success(`${activeEnv.value === 'demo' ? '模拟盘' : '实盘'}凭证连接成功`)
     } else {
       ElMessage.error(connectionResult.value.error || '连接失败')
     }
+    // 如果测试的是当前全局环境，同步 store 状态
+    if (activeEnv.value === connectionStore.environment) {
+      connectionStore.connected = connectionResult.value.connected
+      connectionStore.lastError = connectionResult.value.error || ''
+    }
   } catch (err) {
     connectionResult.value = { connected: false, error: err.message }
+    if (activeEnv.value === connectionStore.environment) {
+      connectionStore.connected = false
+      connectionStore.lastError = err.message
+    }
     ElMessage.error(err.message)
   } finally {
     testing.value = false
   }
 }
 
-onMounted(loadCredential)
+onMounted(async () => {
+  await loadCredentials()
+  activeEnv.value = connectionStore.environment
+})
+
 </script>
 
 <style scoped>
 .settings-page { padding-bottom: 40px; }
-.card-header { display: flex; align-items: center; gap: 12px; }
+.card-header { display: flex; align-items: center; justify-content: space-between; }
 .connection-status :deep(.el-result) { padding: 20px 0; }
 .tips p { margin: 6px 0; line-height: 1.6; }
 </style>

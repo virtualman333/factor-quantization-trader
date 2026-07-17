@@ -127,6 +127,19 @@ CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 30 * 60
 CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 
+# 默认定时任务（可通过 django-celery-beat 管理界面调整）
+CELERY_BEAT_SCHEDULE = {
+    'run-active-strategies-every-minute': {
+        'task': 'apps.strategy.tasks.run_active_strategies',
+        'schedule': 60.0,  # 每分钟
+    },
+    'execute-pending-signals-every-minute': {
+        'task': 'apps.strategy.tasks.execute_pending_signals',
+        'schedule': 60.0,
+    },
+}
+
+
 # OKX Configuration
 OKX_CONFIG = {
     'API_KEY': env('OKX_API_KEY', default=''),

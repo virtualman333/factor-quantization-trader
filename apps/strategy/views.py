@@ -11,12 +11,52 @@ from apps.strategy.serializers import (
 )
 from apps.strategy.services import StrategyService
 from apps.strategy.factors import FactorEngine
+from core.okx_client import get_okx_client
 
 
 class StrategyConfigViewSet(viewsets.ModelViewSet):
     """策略配置 CRUD API"""
     queryset = StrategyConfig.objects.all()
     serializer_class = StrategyConfigSerializer
+
+    @action(detail=False, methods=['get'])
+    def instruments(self, request):
+        """获取 OKX 交易产品列表（支持下拉选交易对）"""
+        inst_type = request.query_params.get('inst_type', 'SWAP')
+        client = get_okx_client()
+        try:
+            result = client.get_instruments(inst_type=inst_type)
+            data = result.get('data', [])
+            # 过滤仅可交易、状态为 live 的产品
+            items = [
+                {
+                    'instId': item.get('instId'),
+                    'instType': item.get('instType'),
+                    'baseCcy': item.get('baseCcy', ''),
+                    'quoteCcy': item.get('quoteCcy', ''),
+                    'state': item.get('state', ''),
+                    'label': item.get('instId'),
+                    'value': item.get('instId'),
+                }
+                for item in data
+                if item.get('state') == 'live' and item.get('instId')
+            ]
+            return Response({'inst_type': inst_type, 'instruments': items})
+        except Exception as e:
+            # 兜底：返回常见 U 本位永续合约
+            fallback = [
+                'BTC-USDT-SWAP', 'ETH-USDT-SWAP', 'SOL-USDT-SWAP',
+                'XRP-USDT-SWAP', 'DOGE-USDT-SWAP', 'LTC-USDT-SWAP',
+                'BNB-USDT-SWAP', 'ADA-USDT-SWAP', 'AVAX-USDT-SWAP',
+                'MATIC-USDT-SWAP', 'LINK-USDT-SWAP', 'UNI-USDT-SWAP',
+            ]
+            items = [{'label': s, 'value': s, 'instType': inst_type} for s in fallback]
+            return Response({
+                'inst_type': inst_type,
+                'instruments': items,
+                'fallback': True,
+                'error': str(e),
+            })
 
     @action(detail=True, methods=['post'])
     def activate(self, request, pk=None):

@@ -25,15 +25,16 @@ class OrderService:
     @staticmethod
     def create_order(inst_id: str, side: str, ord_type: str, sz: str,
                      px: str = '', td_mode: str = 'cash',
-                     pos_side: str = '', source: str = 'manual',
+                     pos_side: str = '', leverage: float = 1,
+                     source: str = 'manual',
                      strategy_id: int = None, signal_id: int = None) -> Dict:
-        """创建并提交订单"""
+        """创建并提交订单（支持合约杠杆）"""
         # 风控检查
         risk_mgr = RiskManager()
         order_value = float(sz) * (float(px) if px else 0)
+        client = get_okx_client()
+
         if ord_type == 'market' and not px:
-            # 市价单需要先获取价格
-            client = get_okx_client()
             ticker = client.get_ticker(inst_id)
             if ticker['code'] == '0' and ticker['data']:
                 order_value = float(sz) * float(ticker['data'][0]['last'])
@@ -44,6 +45,17 @@ class OrderService:
                 px=float(px or 0), account_balance=float('inf'),
                 current_positions={},
             )
+
+        # 合约模式下设置杠杆
+        if td_mode in ('cross', 'isolated') and leverage > 1:
+            try:
+                client.set_leverage(
+                    lever=str(int(leverage)),
+                    mgn_mode=td_mode,
+                    inst_id=inst_id,
+                )
+            except Exception as e:
+                logger.warning(f'设置杠杆失败（可能已设置）: {e}')
 
         # 生成客户订单ID
         cl_ord_id = f'qt_{uuid.uuid4().hex[:12]}'
@@ -63,15 +75,15 @@ class OrderService:
             signal_id=signal_id,
         )
         OrderLog.objects.create(order=trade_order, action='created',
-                                 detail={'cl_ord_id': cl_ord_id})
+                                 detail={'cl_ord_id': cl_ord_id, 'leverage': leverage})
 
         # 提交到 OKX
-        client = get_okx_client()
         result = client.place_order(
             inst_id=inst_id, td_mode=td_mode, side=side,
             ord_type=ord_type, sz=sz, px=px,
             pos_side=pos_side, client_oid=cl_ord_id,
         )
+
 
         if result['code'] == '0':
             data = result.get('data', [{}])[0]

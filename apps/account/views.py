@@ -120,11 +120,20 @@ class OKXCredentialViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'])
     def test_connection(self, request):
-        """测试当前环境凭证能否连接 OKX"""
-        credential = get_active_credential()
-        if not credential or not credential.api_key:
+        """测试指定环境凭证能否连接 OKX（默认当前环境）"""
+        env = request.data.get('env') or request.query_params.get('env')
+        if env and env not in ('demo', 'live'):
+            return Response({'detail': 'env 参数必须是 demo 或 live'}, status=400)
+
+        if env:
+            credential = OKXCredential.objects.filter(name=env).first()
+            env_label = '模拟盘' if env == 'demo' else '实盘'
+        else:
+            credential = get_active_credential()
             config = SystemConfig.get_config()
             env_label = config.get_active_environment_display()
+
+        if not credential or not credential.api_key:
             return Response({'connected': False, 'error': f'未配置 {env_label} 凭证'}, status=400)
 
         client = OKXClient(
@@ -140,6 +149,7 @@ class OKXCredentialViewSet(viewsets.ModelViewSet):
             return Response({'connected': False, 'error': result.get('msg', 'Unknown error')}, status=400)
         except Exception as e:
             return Response({'connected': False, 'error': str(e)}, status=400)
+
 
 
 

@@ -8,7 +8,12 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
+import pandas as pd
+import ta
 from django.db import transaction
+
+
 from django.utils import timezone
 
 from apps.market.models import Instrument
@@ -18,6 +23,7 @@ from apps.strategy.factors import FactorEngine, FactorResult
 from core.okx_client import get_okx_client
 from core.risk_manager import RiskManager, PositionInfo
 from core.exceptions import StrategyError
+
 
 logger = logging.getLogger(__name__)
 
@@ -29,44 +35,34 @@ class StrategyService:
     @staticmethod
     def generate_signals(strategy: StrategyConfig) -> List[SignalRecord]:
         """为策略的所有标的生成交易信号"""
+        if strategy.strategy_type == 'trend_follow':
+            return StrategyService._generate_trend_signals(strategy)
+        return StrategyService._generate_factor_signals(strategy)
+
+    @staticmethod
+    def _generate_factor_signals(strategy: StrategyConfig) -> List[SignalRecord]:
+        """基于因子综合评分生成信号"""
         signals = []
 
         for symbol in strategy.symbols:
             try:
-                # 本地上K线 -> 计算因子 -> 评分 -> 决策
                 market_service = MarketDataService()
-                market_service.fetch_klines(
-                    inst_id=symbol, bar=strategy.bar, limit=200
-                )
-
-                df = market_service.get_klines_df(
-                    inst_id=symbol, bar=strategy.bar, limit=200
-                )
+                market_service.fetch_klines(inst_id=symbol, bar=strategy.bar, limit=200)
+                df = market_service.get_klines_df(inst_id=symbol, bar=strategy.bar, limit=200)
 
                 if df.empty:
                     logger.warning(f'{symbol} 无K线数据，跳过信号生成')
                     continue
 
-                # 计算因子
                 engine = FactorEngine(df)
                 engine.calculate_all(strategy.factors)
                 composite_score, composite_signal = engine.get_composite_score()
 
-                # 获取当前价格
                 current_price = float(df['close'].iloc[-1])
+                final_signal = StrategyService._filter_by_direction(composite_signal, strategy.direction)
 
-                # 方向过滤
-                final_signal = StrategyService._filter_by_direction(
-                    composite_signal, strategy.direction
-                )
-
-                # 构建详情
                 details = {
-                    name: {
-                        'value': r.value,
-                        'score': round(r.score, 4),
-                        'signal': r.signal,
-                    }
+                    name: {'value': r.value, 'score': round(r.score, 4), 'signal': r.signal}
                     for name, r in engine._results.items()
                 }
 
@@ -74,6 +70,9 @@ class StrategyService:
                     strategy=strategy,
                     inst_id=symbol,
                     signal=final_signal,
+                    pos_side=StrategyService._infer_pos_side(final_signal),
+                    td_mode=strategy.td_mode,
+                    leverage=strategy.leverage,
                     score=Decimal(str(round(composite_score, 4))),
                     factors_detail=details,
                     price=Decimal(str(round(current_price, 4))),
@@ -82,10 +81,132 @@ class StrategyService:
                 signals.append(signal)
 
             except Exception as e:
-                logger.error(f'{symbol} 信号生成异常: {e}')
+                logger.error(f'{symbol} 因子信号生成异常: {e}')
 
-        logger.info(f'策略 [{strategy.name}] 生成 {len(signals)} 个信号')
+        logger.info(f'策略 [{strategy.name}] 生成 {len(signals)} 个因子信号')
         return signals
+
+    @staticmethod
+    def _generate_trend_signals(strategy: StrategyConfig) -> List[SignalRecord]:
+        """基于趋势跟踪生成分钟级买卖信号"""
+        signals = []
+        client = get_okx_client()
+
+        # 获取当前持仓以判断是开仓还是平仓
+        positions = {}
+        try:
+            pos_resp = client.get_positions(inst_type=strategy.inst_type)
+            if pos_resp.get('code') == '0':
+                positions = {p['instId']: p for p in pos_resp.get('data', []) if float(p.get('pos', 0)) != 0}
+        except Exception as e:
+            logger.warning(f'获取持仓失败: {e}')
+
+        for symbol in strategy.symbols:
+            try:
+                market_service = MarketDataService()
+                market_service.fetch_klines(inst_id=symbol, bar=strategy.bar, limit=200)
+                df = market_service.get_klines_df(inst_id=symbol, bar=strategy.bar, limit=200)
+
+                if len(df) < 50:
+                    logger.warning(f'{symbol} K线数据不足，跳过')
+                    continue
+
+                signal_type, score, reason = StrategyService._trend_decision(
+                    df, strategy.direction, symbol, positions
+                )
+
+                if signal_type == 'hold':
+                    continue
+
+                current_price = float(df['close'].iloc[-1])
+                pos_side = StrategyService._infer_pos_side(signal_type)
+
+                signal = SignalRecord.objects.create(
+                    strategy=strategy,
+                    inst_id=symbol,
+                    signal=signal_type,
+                    pos_side=pos_side,
+                    td_mode=strategy.td_mode,
+                    leverage=strategy.leverage,
+                    score=Decimal(str(round(score, 4))),
+                    factors_detail={
+                        'ema_fast': round(float(df['close'].ewm(span=12, adjust=False).mean().iloc[-1]), 4),
+                        'ema_slow': round(float(df['close'].ewm(span=26, adjust=False).mean().iloc[-1]), 4),
+                        'close': round(current_price, 4),
+                    },
+                    price=Decimal(str(round(current_price, 4))),
+                    reason=reason,
+                )
+                signals.append(signal)
+
+            except Exception as e:
+                logger.error(f'{symbol} 趋势信号生成异常: {e}')
+
+        logger.info(f'策略 [{strategy.name}] 生成 {len(signals)} 个趋势信号')
+        return signals
+
+    @staticmethod
+    def _trend_decision(df, direction: str, symbol: str, positions: Dict) -> Tuple[str, float, str]:
+        """趋势判断：返回 (signal, score, reason)"""
+        close = df['close']
+        ema_fast = close.ewm(span=12, adjust=False).mean()
+        ema_slow = close.ewm(span=26, adjust=False).mean()
+        adx = ta.trend.ADXIndicator(df['high'], df['low'], df['close'], window=14).adx()
+
+        last_close = float(close.iloc[-1])
+        prev_fast = float(ema_fast.iloc[-2])
+        prev_slow = float(ema_slow.iloc[-2])
+        curr_fast = float(ema_fast.iloc[-1])
+        curr_slow = float(ema_slow.iloc[-1])
+        adx_value = float(adx.iloc[-1]) if not pd.isna(adx.iloc[-1]) else 0
+
+        # 判断当前持仓
+        current_pos = positions.get(symbol, {})
+        current_pos_side = current_pos.get('posSide', '')
+        current_pos_qty = abs(float(current_pos.get('pos', 0)))
+
+        score = min(adx_value / 50, 1.0) if adx_value > 20 else 0.3
+        trend_strong = adx_value >= 25
+
+        # 金叉 / 死叉
+        golden_cross = prev_fast <= prev_slow and curr_fast > curr_slow
+        death_cross = prev_fast >= prev_slow and curr_fast < curr_slow
+        above_ma = curr_fast > curr_slow and last_close > curr_fast
+        below_ma = curr_fast < curr_slow and last_close < curr_fast
+
+        # 平多：死叉 或 跌破慢线
+        if current_pos_side == 'long' and current_pos_qty > 0:
+            if death_cross or (last_close < curr_slow):
+                return 'close_long', 0.7, f'趋势反转/跌破均线，ADX={adx_value:.1f}'
+            return 'hold', 0, '持有多仓'
+
+        # 平空：金叉 或 突破慢线
+        if current_pos_side == 'short' and current_pos_qty > 0:
+            if golden_cross or (last_close > curr_slow):
+                return 'close_short', 0.7, f'趋势反转/突破均线，ADX={adx_value:.1f}'
+            return 'hold', 0, '持有空仓'
+
+        # 开多
+        if direction in ('long', 'both') and (golden_cross or (above_ma and trend_strong)):
+            reason = f'EMA金叉且趋势强劲，ADX={adx_value:.1f}' if golden_cross else f'均线多头排列，ADX={adx_value:.1f}'
+            return 'buy', score, reason
+
+        # 开空
+        if direction in ('short', 'both') and (death_cross or (below_ma and trend_strong)):
+            reason = f'EMA死叉且趋势强劲，ADX={adx_value:.1f}' if death_cross else f'均线空头排列，ADX={adx_value:.1f}'
+            return 'sell', score, reason
+
+        return 'hold', 0, f'无明确趋势，ADX={adx_value:.1f}'
+
+    @staticmethod
+    def _infer_pos_side(signal: str) -> str:
+        """根据信号推断持仓方向"""
+        if signal in ('buy', 'close_short'):
+            return 'long'
+        if signal in ('sell', 'close_long'):
+            return 'short'
+        return 'net'
+
 
     @staticmethod
     def _filter_by_direction(signal: str, direction: str) -> str:
@@ -101,66 +222,71 @@ class StrategyService:
     # ========== 信号执行 ==========
     @staticmethod
     def execute_signal(signal: SignalRecord) -> Optional[Dict]:
-        """执行单个交易信号"""
+        """执行单个交易信号（支持合约杠杆）"""
         if signal.is_executed:
             logger.warning(f'信号 #{signal.id} 已执行，跳过')
             return None
 
         client = get_okx_client()
         strategy = signal.strategy
+        td_mode = signal.td_mode or strategy.td_mode or 'cash'
+        leverage = float(signal.leverage or strategy.leverage or 1)
+
+        # 合约模式下设置杠杆
+        if td_mode in ('cross', 'isolated'):
+            try:
+                client.set_leverage(
+                    lever=str(int(leverage)),
+                    mgn_mode=td_mode,
+                    inst_id=signal.inst_id,
+                )
+            except Exception as e:
+                logger.warning(f'设置杠杆失败（可能已设置）: {e}')
 
         # 获取账户余额
         balance = client.get_account_balance()
         if balance['code'] != '0':
             raise StrategyError(f'获取余额失败: {balance.get("msg")}')
 
-        # 计算可用 USDT
         details = balance.get('data', [])[0].get('details', [])
         usdt_detail = next((d for d in details if d['ccy'] == 'USDT'), None)
         available_usd = float(usdt_detail.get('availBal', 0)) if usdt_detail else 0
 
-        # 计算下单量
-        order_size = available_usd * float(strategy.order_size_pct)
-        trade_value = min(order_size, available_usd)
+        # 合约模式下按杠杆放大名义价值
+        order_value = available_usd * float(strategy.order_size_pct) * leverage
+        order_value = min(order_value, available_usd * leverage)
 
-        if trade_value <= 0:
+        if order_value <= 0:
             logger.warning(f'可用余额不足: {available_usd}')
             return None
 
-        # 根据信号下单
         current_price = float(signal.price) if signal.price else 0
         if current_price <= 0:
             ticker = client.get_ticker(signal.inst_id)
             if ticker['code'] == '0' and ticker['data']:
                 current_price = float(ticker['data'][0]['last'])
 
-        sz = str(round(trade_value / current_price, 6)) if current_price > 0 else '0'
+        sz = str(round(order_value / current_price, 6)) if current_price > 0 else '0'
+
+        side, pos_side = StrategyService._signal_to_order_params(signal.signal)
+        if not side:
+            logger.info(f'信号 #{signal.id} 为 hold，无需下单')
+            return None
 
         try:
-            if signal.signal == 'buy':
-                result = client.place_order(
-                    inst_id=signal.inst_id,
-                    td_mode='cash',
-                    side='buy',
-                    ord_type='market',
-                    sz=sz,
-                )
-            elif signal.signal == 'sell':
-                result = client.place_order(
-                    inst_id=signal.inst_id,
-                    td_mode='cash',
-                    side='sell',
-                    ord_type='market',
-                    sz=sz,
-                )
-            else:
-                # hold / close 暂不处理
-                result = {'code': '0', 'msg': 'signal is hold, no action'}
+            result = client.place_order(
+                inst_id=signal.inst_id,
+                td_mode=td_mode,
+                side=side,
+                pos_side=pos_side,
+                ord_type='market',
+                sz=sz,
+            )
 
             if result['code'] == '0':
                 signal.is_executed = True
                 signal.save(update_fields=['is_executed'])
-                logger.info(f'信号 #{signal.id} 执行成功: {signal.inst_id} {signal.signal}')
+                logger.info(f'信号 #{signal.id} 执行成功: {signal.inst_id} {signal.signal} td_mode={td_mode} leverage={leverage}')
                 return result
 
         except Exception as e:
@@ -168,6 +294,18 @@ class StrategyService:
             raise StrategyError(f'Order failed: {e}') from e
 
         return None
+
+    @staticmethod
+    def _signal_to_order_params(signal: str) -> Tuple[Optional[str], Optional[str]]:
+        """信号转下单参数 (side, pos_side)"""
+        mapping = {
+            'buy': ('buy', 'long'),
+            'sell': ('sell', 'short'),
+            'close_long': ('sell', 'long'),
+            'close_short': ('buy', 'short'),
+        }
+        return mapping.get(signal, (None, None))
+
 
     # ========== 回测 ==========
     @staticmethod

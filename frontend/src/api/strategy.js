@@ -18,3 +18,6 @@ export function getSignals(params) { return api.get('/strategy/signals/', { para
 export function executeSignal(id) { return api.post(`/strategy/signals/${id}/execute/`) }
 
 export function getBacktests(params) { return api.get('/strategy/backtests/', { params }) }
+
+export function getInstruments(instType) { return api.get('/strategy/configs/instruments/', { params: { inst_type: instType } }) }
+

@@ -70,9 +70,38 @@
         <el-button :icon="Fold" text @click="isCollapse = !isCollapse" class="collapse-btn" />
         <span class="title">{{ route.meta.title || '' }}</span>
         <div class="header-right">
-          <el-tag size="small" :type="wsConnected ? 'success' : 'danger'">
-            {{ wsConnected ? '连接正常' : '未连接' }}
-          </el-tag>
+          <el-dropdown @command="handleEnvCommand" :disabled="connectionStore.loading">
+            <el-button size="small" :type="connectionStore.environment === 'live' ? 'danger' : 'primary'">
+              {{ connectionStore.envLabel }}
+              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="demo" :disabled="connectionStore.environment === 'demo'">
+                  模拟盘
+                </el-dropdown-item>
+                <el-dropdown-item command="live" :disabled="connectionStore.environment === 'live'">
+                  实盘
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+
+          <el-tooltip :content="connectionStore.lastError || '点击检测连接'" placement="bottom">
+            <el-tag
+              size="small"
+              :type="connectionStore.statusType"
+              class="status-tag"
+              @click="refreshConnection"
+              :style="{ cursor: 'pointer' }"
+            >
+              <el-icon v-if="connectionStore.loading" class="is-loading"><Loading /></el-icon>
+              <el-icon v-else-if="connectionStore.connected" :size="12"><CircleCheck /></el-icon>
+              <el-icon v-else :size="12"><CircleClose /></el-icon>
+              {{ connectionStore.statusText }}
+            </el-tag>
+          </el-tooltip>
+
         </div>
       </el-header>
       <el-main class="main">
@@ -83,12 +112,34 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
+import { Fold, ArrowDown, Loading, CircleCheck, CircleClose } from '@element-plus/icons-vue'
+import { useConnectionStore } from '@/stores/connection.js'
 
 const route = useRoute()
+const connectionStore = useConnectionStore()
 const isCollapse = ref(false)
-const wsConnected = ref(false)
+let pollTimer = null
+
+async function handleEnvCommand(env) {
+  await connectionStore.switchEnv(env)
+}
+
+async function refreshConnection() {
+  await connectionStore.checkConnection().catch(() => {})
+}
+
+onMounted(async () => {
+  await connectionStore.init()
+  pollTimer = setInterval(() => {
+    connectionStore.checkConnection().catch(() => {})
+  }, 30000)
+})
+
+onUnmounted(() => {
+  if (pollTimer) clearInterval(pollTimer)
+})
 </script>
 
 <style scoped>
@@ -99,7 +150,8 @@ const wsConnected = ref(false)
 .header { display: flex; align-items: center; gap: 16px; background: #fff; border-bottom: 1px solid #e4e7ed; padding: 0 20px; height: 56px; }
 .collapse-btn { font-size: 20px; }
 .title { font-size: 18px; font-weight: 600; }
-.header-right { margin-left: auto; }
+.header-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+.status-tag { display: flex; align-items: center; gap: 4px; }
 .main { background: #f5f7fa; padding: 20px; overflow-y: auto; }
 .el-menu { border-right: none; }
 </style>
