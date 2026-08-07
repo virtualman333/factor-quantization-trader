@@ -2,26 +2,6 @@
 
 > 状态标记：🔴 高优先级  🟡 中优先级  🟢 低优先级  ✅ 已完成
 
----
-
-## 🔴 P0 — 安全与认证（必须优先完成）
-
-- [ ] **用户认证系统**
-  - [ ] 后端 JWT Token 认证（`djangorestframework-simplejwt`）
-  - [ ] 用户注册/登录 API
-  - [ ] 前端登录页面（`/login`）
-  - [ ] Auth Store（Pinia），Token 持久化（localStorage）
-  - [ ] Axios 拦截器自动附加 Token、401 跳转登录页
-  - [ ] 路由守卫（`beforeEach`），未登录重定向
-  - [ ] `DEFAULT_PERMISSION_CLASSES` 从 `AllowAny` 改为 `IsAuthenticated`
-
-- [ ] **API 安全加固**
-  - [ ] 统一错误响应格式（`{code, message, data}`）
-  - [ ] 全局异常处理中间件
-  - [ ] 请求频率限制（throttling），敏感接口加强
-  - [ ] CORS 白名单（非 DEBUG 模式）
-
----
 
 ## 🔴 P0 — 多用户支持
 
