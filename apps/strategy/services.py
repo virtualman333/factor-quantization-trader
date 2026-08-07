@@ -1368,21 +1368,11 @@ th {{ background: #f5f7fa; }}
         """市场状态分类：趋势/震荡/高波动
         基于 ADX + 布林带宽度 + ATR 相对波动率
         """
-        from apps.market.models import KLine
-        from apps.account.models import SystemConfig
         import pandas as pd
 
-        env = SystemConfig.get_config(user=user).active_environment
-        rows = list(
-            KLine.objects.filter(
-                instrument__inst_id=inst_id, bar=bar, environment=env,
-            ).order_by('-timestamp')[:lookback]
-        )
-        if len(rows) < 30:
+        df = MarketDataService.get_klines_df(inst_id=inst_id, bar=bar, limit=lookback, user=user)
+        if df is None or len(df) < 30:
             return {'error': '数据不足'}
-
-        rows.sort(key=lambda r: r.timestamp)
-        df = MarketDataService.klines_to_df(rows)
 
         # ADX 趋势强度
         try:
