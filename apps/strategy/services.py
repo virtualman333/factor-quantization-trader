@@ -33,6 +33,20 @@ class StrategyService:
 
     # ========== 信号生成 ==========
     @staticmethod
+    def _calculate_atr(df, atr_len=14):
+        """计算 ATR（真实波幅均值），返回与 df 等长的 Series"""
+        high = df['high'].astype(float)
+        low = df['low'].astype(float)
+        close = df['close'].astype(float)
+        prev_close = close.shift(1)
+        tr1 = high - low
+        tr2 = (high - prev_close).abs()
+        tr3 = (low - prev_close).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(window=atr_len, min_periods=atr_len).mean()
+        return atr
+
+    @staticmethod
     def generate_signals(strategy: StrategyConfig) -> List[SignalRecord]:
         """为策略的所有标的生成交易信号"""
         if strategy.strategy_type == 'trend_follow':

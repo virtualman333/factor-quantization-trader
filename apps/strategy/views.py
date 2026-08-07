@@ -1,5 +1,7 @@
 """策略引擎 API 视图"""
 
+import re
+
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -9,7 +11,7 @@ from apps.strategy.serializers import (
     StrategyConfigSerializer, FactorDefinitionSerializer,
     SignalRecordSerializer, BacktestResultSerializer,
 )
-from apps.strategy.services import StrategyService
+from apps.strategy.services import StrategyService, StrategyError
 from apps.strategy.factors import FactorEngine
 from core.okx_client import get_okx_client
 
@@ -102,24 +104,64 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
         strategy = self.get_object()
         from datetime import datetime, timedelta
         from django.utils import timezone
+        from django.utils.dateparse import parse_datetime, parse_date
+
+        def _parse_dt(value, is_end=False):
+            """解析前端传入的日期/时间字符串。
+
+            前端日期选择器可能只传 YYYY-MM-DD（纯日期）。若 end_date 缺省时间，
+            应取当天 23:59:59 而非 00:00，否则会把当天所有 K 线数据过滤掉。
+            注意：新版 Django 的 parse_datetime 对纯日期会返回 00:00，因此先以
+            正则识别纯日期，确保 end 能取到当天结束时刻。
+            """
+            if not value:
+                return None
+            if isinstance(value, datetime):
+                return value
+            if isinstance(value, str):
+                if re.match(r'^\d{4}-\d{2}-\d{2}$', value):
+                    d = parse_date(value)
+                    if d is not None:
+                        if is_end:
+                            return datetime(d.year, d.month, d.day, 23, 59, 59, 999999)
+                        return datetime(d.year, d.month, d.day, 0, 0, 0, 0)
+                dt = parse_datetime(value)
+                if dt is not None:
+                    return dt
+                try:
+                    return datetime.fromisoformat(value)
+                except ValueError:
+                    return None
+            return None
 
         start_date = request.data.get('start_date')
         end_date = request.data.get('end_date')
 
-        if not start_date or not end_date:
+        start_dt = _parse_dt(start_date, is_end=False)
+        end_dt = _parse_dt(end_date, is_end=True)
+
+        if not start_dt or not end_dt:
             # 默认回测最近30天
             now = timezone.now()
-            start_date = (now - timedelta(days=30)).isoformat()
-            end_date = now.isoformat()
+            end_dt = now
+            start_dt = now - timedelta(days=30)
+
+        # 统一为带时区的时间，避免 naive datetime 警告
+        if timezone.is_naive(start_dt):
+            start_dt = timezone.make_aware(start_dt)
+        if timezone.is_naive(end_dt):
+            end_dt = timezone.make_aware(end_dt)
 
         try:
             result = StrategyService.run_backtest(
                 strategy,
-                start_date=datetime.fromisoformat(start_date),
-                end_date=datetime.fromisoformat(end_date),
+                start_date=start_dt,
+                end_date=end_dt,
             )
             serializer = BacktestResultSerializer(result)
             return Response(serializer.data)
+        except StrategyError as e:
+            return Response({'error': str(e)}, status=400)
         except Exception as e:
             return Response({'error': str(e)}, status=500)
 

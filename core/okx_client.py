@@ -263,10 +263,17 @@ class OKXClient:
 
     def get_positions(self, inst_type: str = '', inst_id: str = '',
                       pos_id: str = '') -> Dict:
-        """获取持仓信息"""
+        """获取持仓信息
+
+        注意：OKX 的 get_positions 接口仅支持保证金类品种
+        (MARGIN/SWAP/FUTURES/OPTION)。现货 SPOT 没有"持仓"概念，
+        传入 instType=SPOT 会返回 51000 参数错误，故对 SPOT 或不支持的
+        值不传 instType，由接口返回全部持仓（现货策略通常为空）。
+        """
         params = {}
-        if inst_type:
-            params['instType'] = inst_type
+        cleaned = (inst_type or '').strip().upper()
+        if cleaned in {'MARGIN', 'SWAP', 'FUTURES', 'OPTION'}:
+            params['instType'] = cleaned
         if inst_id:
             params['instId'] = inst_id
         if pos_id:
