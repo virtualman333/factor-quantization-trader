@@ -235,6 +235,13 @@ class BacktestResult(models.Model):
     avg_loss = models.DecimalField('平均亏损', max_digits=20, decimal_places=4, null=True)
     profit_factor = models.DecimalField('盈亏比', max_digits=8, decimal_places=4, null=True)
     equity_curve = models.JSONField('权益曲线', default=list)
+    # ---- 回测增强 ----
+    fee_rate = models.DecimalField('手续费率', max_digits=8, decimal_places=6, default=0.001)
+    slippage = models.DecimalField('滑点(百分比)', max_digits=8, decimal_places=6, default=0.001)
+    trade_detail = models.JSONField('交易明细', default=list)
+    monte_carlo = models.JSONField('蒙特卡洛模拟', default=dict, blank=True)
+    walk_forward = models.JSONField('Walk-forward分析', default=dict, blank=True)
+    is_optimized = models.BooleanField('是否优化结果', default=False)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
 
     class Meta:

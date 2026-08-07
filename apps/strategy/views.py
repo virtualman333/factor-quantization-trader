@@ -166,14 +166,72 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
         strategy = self.get_object()
         start_dt, end_dt = _parse_backtest_dates(request)
         try:
+            fee_rate = float(request.data.get('fee_rate', 0.001))
+            slippage = float(request.data.get('slippage', 0.001))
             result = StrategyService.run_backtest(
                 strategy,
                 start_date=start_dt,
                 end_date=end_dt,
                 user=request.user,
+                fee_rate=fee_rate,
+                slippage=slippage,
             )
             serializer = BacktestResultSerializer(result)
             return Response(serializer.data)
+        except StrategyError as e:
+            return Response({'error': str(e)}, status=400)
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+
+    @action(detail=True, methods=['post'])
+    def monte_carlo(self, request, pk=None):
+        """蒙特卡洛模拟：基于最近一次回测权益曲线"""
+        strategy = self.get_object()
+        bt = strategy.backtests.order_by('-created_at').first()
+        if not bt:
+            return Response({'error': '请先运行回测'}, status=400)
+        n_simulations = int(request.data.get('n_simulations', 1000))
+        result = StrategyService.run_monte_carlo(bt, n_simulations=n_simulations)
+        return Response(result)
+
+    @action(detail=True, methods=['post'])
+    def walk_forward(self, request, pk=None):
+        """Walk-forward 分析：滚动窗口参数稳定性"""
+        strategy = self.get_object()
+        start_dt, end_dt = _parse_backtest_dates(request)
+        window_days = int(request.data.get('window_days', 14))
+        result = StrategyService.run_walk_forward(
+            strategy, start_date=start_dt, end_date=end_dt,
+            window_days=window_days, user=request.user,
+        )
+        return Response(result)
+
+    @action(detail=True, methods=['get'])
+    def export_report(self, request, pk=None):
+        """导出回测报告（HTML，可打印为PDF）"""
+        strategy = self.get_object()
+        bt = strategy.backtests.order_by('-created_at').first()
+        if not bt:
+            return Response({'error': '请先运行回测'}, status=400)
+        html = StrategyService.export_backtest_html(bt)
+        from django.http import HttpResponse
+        resp = HttpResponse(html, content_type='text/html; charset=utf-8')
+        resp['Content-Disposition'] = f'attachment; filename="backtest_{strategy.name}_{bt.id}.html"'
+        return resp
+
+    @action(detail=True, methods=['post'])
+    def multi_symbol_backtest(self, request, pk=None):
+        """多品种并行回测：每个标的分开回测对比"""
+        strategy = self.get_object()
+        start_dt, end_dt = _parse_backtest_dates(request)
+        fee_rate = float(request.data.get('fee_rate', 0.001))
+        slippage = float(request.data.get('slippage', 0.001))
+        try:
+            result = StrategyService.run_multi_symbol_backtest(
+                strategy, start_date=start_dt, end_date=end_dt,
+                user=request.user, fee_rate=fee_rate, slippage=slippage,
+            )
+            return Response(result)
         except StrategyError as e:
             return Response({'error': str(e)}, status=400)
         except Exception as e:

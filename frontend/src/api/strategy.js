@@ -10,6 +10,9 @@ export function pauseStrategy(id) { return api.post(`/strategy/configs/${id}/pau
 export function runSignals(id) { return api.post(`/strategy/configs/${id}/run_signals/`) }
 export function executeSignals(id) { return api.post(`/strategy/configs/${id}/execute_signals/`) }
 export function runBacktest(id, data) { return api.post(`/strategy/configs/${id}/backtest/`, data) }
+export function runMonteCarlo(id, data) { return api.post(`/strategy/configs/${id}/monte_carlo/`, data) }
+export function runWalkForward(id, data) { return api.post(`/strategy/configs/${id}/walk_forward/`, data) }
+export function exportBacktestReport(id) { return api.get(`/strategy/configs/${id}/export_report/`, { responseType: 'blob' }) }
 export function optimizeParams(id, data) { return api.post(`/strategy/configs/${id}/optimize_params/`, data) }
 export function optimizeWeights(id, data) { return api.post(`/strategy/configs/${id}/optimize_weights/`, data) }
 export function compareStrategies(data) { return api.post('/strategy/configs/compare/', data) }

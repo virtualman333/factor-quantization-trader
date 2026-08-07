@@ -225,6 +225,14 @@
         <el-form-item label="结束日期">
           <el-date-picker v-model="btEnd" type="date" value-format="YYYY-MM-DD" />
         </el-form-item>
+        <el-form-item label="手续费率">
+          <el-input-number v-model="btFeeRate" :min="0" :max="0.01" :step="0.0005" :precision="4" />
+          <span class="hint">单边比例，默认 0.1%</span>
+        </el-form-item>
+        <el-form-item label="滑点">
+          <el-input-number v-model="btSlippage" :min="0" :max="0.01" :step="0.0005" :precision="4" />
+          <span class="hint">成交价偏移，默认 0.1%</span>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="backtestVisible = false">取消</el-button>
@@ -333,6 +341,8 @@ const backtestVisible = ref(false)
 const btLoading = ref(false)
 const btStart = ref('')
 const btEnd = ref('')
+const btFeeRate = ref(0.001)
+const btSlippage = ref(0.001)
 const btStrategyId = ref(null)
 
 // 优化相关
@@ -531,7 +541,10 @@ const runBacktest = async () => {
   if (!btStart.value || !btEnd.value) { ElMessage.warning('请选择日期'); return }
   btLoading.value = true
   try {
-    await runBacktestApi(btStrategyId.value, { start_date: btStart.value, end_date: btEnd.value })
+    await runBacktestApi(btStrategyId.value, {
+      start_date: btStart.value, end_date: btEnd.value,
+      fee_rate: btFeeRate.value, slippage: btSlippage.value,
+    })
     ElMessage.success('回测已提交')
     backtestVisible.value = false
   } catch (e) { ElMessage.error(e.message) }

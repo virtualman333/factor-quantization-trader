@@ -757,8 +757,13 @@ class StrategyService:
     # ========== 回测 ==========
     @staticmethod
     def run_backtest(strategy: StrategyConfig,
-                     start_date: datetime, end_date: datetime, user=None) -> BacktestResult:
-        """简单回测引擎（基于历史K线）"""
+                     start_date: datetime, end_date: datetime, user=None,
+                     fee_rate: float = 0.001, slippage: float = 0.001) -> BacktestResult:
+        """回测引擎（基于历史K线，支持手续费/滑点模拟）
+        Args:
+            fee_rate: 手续费率（单边，默认 0.1%）
+            slippage: 滑点（百分比，默认 0.1%）
+        """
         from apps.market.models import KLine
         from apps.account.models import SystemConfig
         import numpy as np
@@ -824,17 +829,19 @@ class StrategyService:
                 score, sig = engine.get_composite_score()
                 sig = StrategyService._filter_by_direction(sig, strategy.direction)
 
-                price = float(kline.close)
+                # 成交价含滑点
+                price = float(kline.close) * (1 + slippage) if sig == 'buy' else float(kline.close) * (1 - slippage)
                 trade_pct = float(strategy.order_size_pct)
 
                 if sig == 'buy':
                     amount = capital * trade_pct
+                    fee = amount * fee_rate
                     qty = amount / price
-                    capital -= amount
+                    capital -= (amount + fee)
                     trades_log.append({
                         'timestamp': timestamp, 'symbol': sym,
                         'action': 'buy', 'price': price, 'amount': amount,
-                        'capital': capital,
+                        'fee': fee, 'capital': capital,
                     })
 
                 elif sig == 'sell':
@@ -842,13 +849,14 @@ class StrategyService:
                     for t in list(trades_log):
                         if t['symbol'] == sym and t['action'] == 'buy':
                             proceeds = t['amount'] * (price / t['price'])
-                            pnl = proceeds - t['amount']
-                            capital += proceeds
+                            fee = proceeds * fee_rate
+                            pnl = proceeds - t['amount'] - fee - (t.get('fee') or 0)
+                            capital += (proceeds - fee)
                             trades_log.remove(t)
                             trades_log.append({
                                 'timestamp': timestamp, 'symbol': sym,
                                 'action': 'sell', 'price': price,
-                                'pnl': pnl, 'capital': capital,
+                                'pnl': pnl, 'fee': fee, 'capital': capital,
                             })
                             break
 
@@ -914,9 +922,242 @@ class StrategyService:
             avg_loss=Decimal(str(round(float(avg_loss), 4))),
             profit_factor=Decimal(str(round(float(profit_factor), 4))),
             equity_curve=[(ts.isoformat(), float(v)) for ts, v in equity_curve],
+            fee_rate=Decimal(str(fee_rate)),
+            slippage=Decimal(str(slippage)),
+            trade_detail=[{**t, 'timestamp': t['timestamp'].isoformat() if hasattr(t['timestamp'], 'isoformat') else str(t['timestamp'])} for t in trades_log],
         )
         logger.info(f'回测完成: 总收益 {total_return:.2%}, 夏普 {sharpe:.2f}, 最大回撤 {max_dd:.2%}')
         return result
+
+    # ========== 蒙特卡洛模拟 ==========
+    @staticmethod
+    def run_monte_carlo(backtest_result: BacktestResult, n_simulations: int = 1000) -> Dict:
+        """基于回测权益曲线做蒙特卡洛模拟，估计最大回撤/收益分布"""
+        import numpy as np
+
+        equity = [float(v) for _, v in (backtest_result.equity_curve or [])]
+        if len(equity) < 2:
+            return {'error': '权益曲线太短，无法模拟'}
+
+        # 日收益率序列
+        returns = np.diff(equity) / np.array(equity[:-1])
+        returns = returns[~np.isnan(returns) & ~np.isinf(returns)]
+        if len(returns) < 2:
+            return {'error': '收益率样本不足'}
+
+        n = len(returns)
+        max_drawdowns = []
+        final_returns = []
+        rng = np.random.default_rng(42)
+
+        for _ in range(n_simulations):
+            # 随机重采样（有放回）生成新的收益序列
+            sampled = rng.choice(returns, size=n, replace=True)
+            sim_equity = np.cumprod(1 + sampled) * equity[0]
+
+            # 最大回撤
+            peak = np.maximum.accumulate(sim_equity)
+            dd = (sim_equity - peak) / peak
+            max_drawdowns.append(float(np.min(dd)))
+
+            final_returns.append(float(sim_equity[-1] / equity[0] - 1))
+
+        def _percentile(arr, p):
+            arr_sorted = sorted(arr)
+            idx = min(int(len(arr_sorted) * p), len(arr_sorted) - 1)
+            return arr_sorted[idx]
+
+        return {
+            'n_simulations': n_simulations,
+            'max_drawdown': {
+                'median': round(_percentile(max_drawdowns, 0.5), 6),
+                'p95': round(_percentile(max_drawdowns, 0.95), 6),
+                'p99': round(_percentile(max_drawdowns, 0.99), 6),
+            },
+            'total_return': {
+                'median': round(_percentile(final_returns, 0.5), 6),
+                'p5': round(_percentile(final_returns, 0.05), 6),
+                'p95': round(_percentile(final_returns, 0.95), 6),
+            },
+            'max_drawdowns_sample': [round(x, 4) for x in max_drawdowns[:200]],
+        }
+
+    # ========== Walk-forward 分析 ==========
+    @staticmethod
+    def run_walk_forward(strategy: StrategyConfig,
+                         start_date: datetime, end_date: datetime,
+                         window_days: int = 14, user=None) -> Dict:
+        """Walk-forward 分析：滚动窗口训练回测，评估参数稳定性"""
+        from datetime import timedelta
+
+        results = []
+        total_days = (end_date - start_date).days
+        if total_days < window_days * 2:
+            return {'error': f'回测区间需至少 {window_days * 2} 天'}
+
+        cur = start_date
+        idx = 0
+        while cur + timedelta(days=window_days) <= end_date:
+            win_start = cur
+            win_end = min(cur + timedelta(days=window_days), end_date)
+            try:
+                bt = StrategyService.run_backtest(
+                    strategy, start_date=win_start, end_date=win_end, user=user
+                )
+                results.append({
+                    'window': idx,
+                    'start': win_start.date().isoformat(),
+                    'end': win_end.date().isoformat(),
+                    'total_return': float(bt.total_return),
+                    'sharpe_ratio': float(bt.sharpe_ratio or 0),
+                    'max_drawdown': float(bt.max_drawdown),
+                    'total_trades': bt.total_trades,
+                })
+                bt.delete()  # walk-forward 中间结果不保留
+            except Exception as e:
+                results.append({
+                    'window': idx, 'error': str(e),
+                    'start': win_start.date().isoformat(),
+                    'end': win_end.date().isoformat(),
+                })
+            cur = win_end
+            idx += 1
+
+        if not results:
+            return {'error': '无有效的窗口回测结果'}
+
+        valid = [r for r in results if 'error' not in r]
+        avg_return = sum(r['total_return'] for r in valid) / len(valid) if valid else 0
+        avg_sharpe = sum(r['sharpe_ratio'] for r in valid) / len(valid) if valid else 0
+        return {
+            'windows': results,
+            'avg_total_return': round(avg_return, 6),
+            'avg_sharpe_ratio': round(avg_sharpe, 4),
+            'positive_windows': len([r for r in valid if r['total_return'] > 0]),
+            'total_windows': len(valid),
+        }
+
+    # ========== 回测报告导出（HTML） ==========
+    @staticmethod
+    def export_backtest_html(backtest_result: BacktestResult) -> str:
+        """生成回测报告 HTML（可直接打印为 PDF）"""
+        from datetime import datetime
+
+        curve = backtest_result.equity_curve or []
+        curve_rows = ''.join(
+            f'<tr><td>{ts[:16].replace("T", " ")}</td><td>{float(v):,.2f}</td></tr>'
+            for ts, v in curve[-500:]
+        )
+        trades = backtest_result.trade_detail or []
+        trade_rows = ''.join(
+            f'<tr><td>{t.get("timestamp", "")}</td><td>{t.get("symbol", "")}</td>'
+            f'<td>{t.get("action", "")}</td><td>{t.get("price", "")}</td>'
+            f'<td>{t.get("amount", "")}</td><td>{t.get("pnl", "-")}</td>'
+            f'<td>{t.get("fee", "-")}</td></tr>'
+            for t in trades[-200:]
+        )
+
+        return f"""<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>回测报告 - {backtest_result.strategy.name}</title>
+<style>
+body {{ font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; margin: 30px; color: #333; }}
+h1 {{ border-bottom: 2px solid #409eff; padding-bottom: 8px; }}
+h2 {{ margin-top: 28px; color: #409eff; }}
+table {{ border-collapse: collapse; width: 100%; margin-top: 10px; }}
+th, td {{ border: 1px solid #ddd; padding: 6px 10px; font-size: 13px; text-align: right; }}
+th {{ background: #f5f7fa; }}
+.metrics {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 16px; }}
+.metric {{ border: 1px solid #ebeef5; border-radius: 8px; padding: 12px; text-align: center; }}
+.metric .label {{ color: #909399; font-size: 12px; }}
+.metric .value {{ font-size: 20px; font-weight: bold; margin-top: 4px; }}
+.positive {{ color: #67c23a; }}
+.negative {{ color: #f56c6c; }}
+@media print {{ body {{ margin: 10mm; }} }}
+</style>
+</head>
+<body>
+<h1>策略回测报告</h1>
+<p>策略: <b>{backtest_result.strategy.name}</b> | 类型: {backtest_result.strategy.get_strategy_type_display()}</p>
+<p>回测区间: {backtest_result.start_date.strftime('%Y-%m-%d')} ~ {backtest_result.end_date.strftime('%Y-%m-%d')} | 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
+
+<h2>核心指标</h2>
+<div class="metrics">
+  <div class="metric"><div class="label">总收益率</div><div class="value {'positive' if float(backtest_result.total_return)>=0 else 'negative'}">{float(backtest_result.total_return)*100:.2f}%</div></div>
+  <div class="metric"><div class="label">年化收益率</div><div class="value">{float(backtest_result.annual_return or 0)*100:.2f}%</div></div>
+  <div class="metric"><div class="label">夏普比率</div><div class="value">{backtest_result.sharpe_ratio}</div></div>
+  <div class="metric"><div class="label">最大回撤</div><div class="value negative">{float(backtest_result.max_drawdown)*100:.2f}%</div></div>
+  <div class="metric"><div class="label">胜率</div><div class="value">{float(backtest_result.win_rate)*100:.1f}%</div></div>
+  <div class="metric"><div class="label">交易次数</div><div class="value">{backtest_result.total_trades}</div></div>
+  <div class="metric"><div class="label">盈亏比</div><div class="value">{backtest_result.profit_factor}</div></div>
+  <div class="metric"><div class="label">初始/最终资金</div><div class="value" style="font-size:14px">{backtest_result.initial_capital} → {backtest_result.final_capital}</div></div>
+</div>
+
+<h2>权益曲线</h2>
+<table>
+<tr><th>时间</th><th>权益</th></tr>
+{curve_rows}
+</table>
+
+<h2>交易明细（最近{min(len(trades),200)}笔）</h2>
+<table>
+<tr><th>时间</th><th>品种</th><th>方向</th><th>价格</th><th>金额</th><th>盈亏</th><th>手续费</th></tr>
+{trade_rows}
+</table>
+
+<p style="margin-top:20px;color:#909399;font-size:12px">手续费率 {backtest_result.fee_rate} | 滑点 {backtest_result.slippage}</p>
+</body>
+</html>"""
+
+    # ========== 多品种并行回测 ==========
+    @staticmethod
+    def run_multi_symbol_backtest(strategy: StrategyConfig,
+                                  start_date: datetime, end_date: datetime,
+                                  user=None, fee_rate: float = 0.001,
+                                  slippage: float = 0.001) -> Dict:
+        """对策略的每个标的单独回测，返回各品种独立表现 + 汇总"""
+        symbols = list(strategy.symbols or [])
+        if not symbols:
+            raise StrategyError('策略未配置标的')
+
+        original_symbols = strategy.symbols
+        per_symbol = []
+        try:
+            for sym in symbols:
+                strategy.symbols = [sym]
+                try:
+                    bt = StrategyService.run_backtest(
+                        strategy, start_date=start_date, end_date=end_date,
+                        user=user, fee_rate=fee_rate, slippage=slippage,
+                    )
+                    per_symbol.append({
+                        'symbol': sym,
+                        'total_return': float(bt.total_return),
+                        'annual_return': float(bt.annual_return or 0),
+                        'sharpe_ratio': float(bt.sharpe_ratio or 0),
+                        'max_drawdown': float(bt.max_drawdown),
+                        'win_rate': float(bt.win_rate),
+                        'total_trades': bt.total_trades,
+                        'profit_factor': float(bt.profit_factor or 0),
+                        'equity_curve': bt.equity_curve,
+                    })
+                except Exception as e:
+                    per_symbol.append({'symbol': sym, 'error': str(e)})
+        finally:
+            strategy.symbols = original_symbols
+
+        valid = [r for r in per_symbol if 'error' not in r]
+        avg_return = sum(r['total_return'] for r in valid) / len(valid) if valid else 0
+        return {
+            'strategy_id': strategy.id,
+            'name': strategy.name,
+            'symbols': per_symbol,
+            'avg_total_return': round(avg_return, 6),
+            'positive_symbols': len([r for r in valid if r['total_return'] > 0]),
+            'total_symbols': len(valid),
+        }
 
     # ========== 策略参数优化器（网格搜索） ==========
     @staticmethod
