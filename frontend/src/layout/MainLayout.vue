@@ -202,9 +202,43 @@ onUnmounted(() => {
 
 <style scoped>
 .layout { height: 100vh; }
-.aside { background: #1d1e2c; overflow: hidden; transition: width 0.3s; }
-.logo { display: flex; align-items: center; gap: 10px; padding: 16px 20px; color: #fff; cursor: pointer; font-size: 16px; font-weight: bold; }
+.aside {
+  background: #1d1e2c;
+  overflow: hidden;
+  transition: width 0.3s;
+  display: flex;
+  flex-direction: column;
+}
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px;
+  color: #fff;
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: bold;
+  flex-shrink: 0;
+}
 .logo-text { white-space: nowrap; }
+/* 菜单区域占满剩余高度，超出时可滚动 */
+.aside :deep(.el-menu) {
+  border-right: none;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.aside :deep(.el-menu::-webkit-scrollbar) {
+  width: 4px;
+}
+.aside :deep(.el-menu::-webkit-scrollbar-thumb) {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
+.aside :deep(.el-menu::-webkit-scrollbar-track) {
+  background: transparent;
+}
 .header { display: flex; align-items: center; gap: 16px; background: #fff; border-bottom: 1px solid #e4e7ed; padding: 0 20px; height: 56px; }
 .collapse-btn { font-size: 20px; }
 .title { font-size: 18px; font-weight: 600; }
@@ -212,5 +246,4 @@ onUnmounted(() => {
 .status-tag { display: flex; align-items: center; gap: 4px; }
 .user-name { color: #606266; }
 .main { background: #f5f7fa; padding: 20px; overflow-y: auto; }
-.el-menu { border-right: none; }
 </style>
