@@ -97,6 +97,12 @@ echo.
 
 ::: ========== 启动 Django 后端 ==========
 echo [5/6] 启动 Django 后端 (端口 8000)...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',8000); $c.Close(); exit 0 } catch { exit 1 }"
+if %errorlevel% equ 0 (
+    echo   [..] 端口 8000 被占用，正在释放...
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=(Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue|Select-Object -First 1).OwningProcess; if($p){Stop-Process -Id $p -Force}"
+    timeout /t 1 /nobreak >nul
+)
 start "Django Server" cmd /c "title Django Server && venv\Scripts\activate.bat && python manage.py runserver 0.0.0.0:8000"
 echo [√] Django 后端已启动
 echo.
@@ -106,6 +112,18 @@ timeout /t 3 /nobreak >nul
 
 ::: ========== 启动前端 ==========
 echo [6/6] 启动前端 Vite (端口 5173)...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',5173); $c.Close(); exit 0 } catch { exit 1 }"
+if %errorlevel% equ 0 (
+    echo   [..] 端口 5173 被占用，正在释放...
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=(Get-NetTCPConnection -LocalPort 5173 -ErrorAction SilentlyContinue|Select-Object -First 1).OwningProcess; if($p){Stop-Process -Id $p -Force}"
+    timeout /t 1 /nobreak >nul
+)
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',5174); $c.Close(); exit 0 } catch { exit 1 }"
+if %errorlevel% equ 0 (
+    echo   [..] 端口 5174 被占用，正在释放...
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=(Get-NetTCPConnection -LocalPort 5174 -ErrorAction SilentlyContinue|Select-Object -First 1).OwningProcess; if($p){Stop-Process -Id $p -Force}"
+    timeout /t 1 /nobreak >nul
+)
 start "Vite Frontend" cmd /c "title Vite Frontend && cd frontend && npm run dev"
 echo [√] 前端已启动
 echo.
@@ -129,10 +147,4 @@ pause >nul
 ::: ========== 清理 ==========
 echo.
 echo 正在停止所有服务...
-
-taskkill /f /im "celery.exe" >nul 2>&1
-taskkill /f /fi "WINDOWTITLE eq Django Server" >nul 2>&1
-taskkill /f /fi "WINDOWTITLE eq Vite Frontend" >nul 2>&1
-
-echo 所有服务已停止。
-pause
+call stop.bat

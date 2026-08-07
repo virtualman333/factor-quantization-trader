@@ -8,28 +8,37 @@ echo   正在停止因子量化交易系统所有服务...
 echo  ========================================
 echo.
 
-echo [1/4] 停止 Celery Worker...
-taskkill /f /fi "WINDOWTITLE eq Celery Worker" >nul 2>&1
+echo [1/8] 停止 Flower (端口 5555)...
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :5555 ^| findstr LISTENING') do taskkill /f /pid %%a >nul 2>&1
+echo [√]
+
+echo [2/8] 停止 Django (端口 8000)...
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :8000 ^| findstr LISTENING') do taskkill /f /pid %%a >nul 2>&1
+echo [√]
+
+echo [3/8] 停止前端 Vite (端口 5173)...
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :5173 ^| findstr LISTENING') do taskkill /f /pid %%a >nul 2>&1
+echo [√]
+
+echo [4/8] 停止前端 Vite (端口 5174)...
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :5174 ^| findstr LISTENING') do taskkill /f /pid %%a >nul 2>&1
+echo [√]
+
+echo [5/8] 停止 Celery Worker...
 taskkill /f /im "celery.exe" >nul 2>&1
-echo [√] 已停止
+echo [√]
 
-echo [2/4] 停止 Celery Beat...
-taskkill /f /fi "WINDOWTITLE eq Celery Beat" >nul 2>&1
-echo [√] 已停止
+echo [6/8] 停止 Celery Beat...
+taskkill /f /im "celery.exe" >nul 2>&1
+echo [√]
 
-echo [3/4] 停止 Django 后端...
-:: 杀掉占用 8000 端口的进程
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr :8000 ^| findstr LISTENING') do (
-    taskkill /f /pid %%a >nul 2>&1
-)
-echo [√] 已停止
+echo [7/8] 清理残留 Python 进程...
+taskkill /f /im "python.exe" >nul 2>&1
+echo [√]
 
-echo [4/4] 停止前端 Vite...
-:: 杀掉占用 5173 端口的进程
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr :5173 ^| findstr LISTENING') do (
-    taskkill /f /pid %%a >nul 2>&1
-)
-echo [√] 已停止
+echo [8/8] 清理残留 Node.js 进程...
+taskkill /f /im "node.exe" >nul 2>&1
+echo [√]
 
 echo.
 echo  ========================================
