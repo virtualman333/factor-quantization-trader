@@ -45,6 +45,26 @@ MIDDLEWARE = [
     'core.middleware.ApiErrorMiddleware',
 ]
 
+# ---- 性能监控（仅开发环境启用，生产环境由 DJANGO_DEBUG=False 关闭） ----
+if DEBUG:
+    INSTALLED_APPS += ['silk', 'debug_toolbar']
+    MIDDLEWARE = MIDDLEWARE + [
+        'silk.middleware.SilkyMiddleware',
+        'debug_toolbar.middleware.DebugToolbarMiddleware',
+    ]
+    # Debug Toolbar：仅本地回环 IP 显示（避免 API JSON 响应被注入）
+    DEBUG_TOOLBAR_CONFIG = {
+        'SHOW_TOOLBAR_CALLBACK': lambda request: DEBUG and request.META.get('REMOTE_ADDR') in (
+            '127.0.0.1', 'localhost',
+        ),
+        'SHOW_COLLAPSED': True,
+    }
+    # Silk：请求性能分析（数据保存在 DB，访问 /silk/）
+    SILKY_PYTHON_PROFILER = False
+    SILKY_AUTHENTICATION = False
+    SILKY_META = True
+    SILKY_MAX_RECORDED_REQUESTS = 2000
+
 ROOT_URLCONF = 'config.urls'
 
 TEMPLATES = [
@@ -174,6 +194,11 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.strategy.tasks.execute_pending_signals',
         'schedule': 60.0,
     },
+    # Redis 内存监控（每 10 分钟）
+    'redis-memory-monitor-every-10min': {
+        'task': 'apps.account.tasks.redis_memory_monitor_task',
+        'schedule': 600.0,
+    },
 }
 
 
@@ -194,4 +219,70 @@ RISK_CONFIG = {
     'STOP_LOSS_PCT': env.float('STOP_LOSS_PCT', default=0.05),
     'DEFAULT_LEVERAGE': 3,
     'MIN_ORDER_INTERVAL': 1.0,  # seconds
+}
+
+# ---- 数据库慢查询日志（>1s 记录到 logs/slow_queries.log） ----
+import logging
+
+
+class SlowQueryFilter(logging.Filter):
+    def filter(self, record):
+        # Django db backend 日志的 record 带 duration 属性（秒）
+        return getattr(record, 'duration', 0) >= 1.0
+
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'filters': {
+        'slow_query': {'()': 'config.settings.SlowQueryFilter'},
+    },
+    'formatters': {
+        'slow': {
+            'format': '%(asctime)s [%(levelname)s] %(duration).3fs %(message)s',
+            'datefmt': '%Y-%m-%d %H:%M:%S',
+        },
+        'verbose': {
+            'format': '%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+            'datefmt': '%Y-%m-%d %H:%M:%S',
+        },
+    },
+    'handlers': {
+        'slow_query_file': {
+            'level': 'DEBUG',
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': str(BASE_DIR / 'logs' / 'slow_queries.log'),
+            'maxBytes': 10 * 1024 * 1024,  # 10MB
+            'backupCount': 5,
+            'formatter': 'slow',
+            'filters': ['slow_query'],
+            'encoding': 'utf-8',
+        },
+        'app_file': {
+            'level': 'INFO',
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': str(BASE_DIR / 'logs' / 'app.log'),
+            'maxBytes': 10 * 1024 * 1024,
+            'backupCount': 5,
+            'formatter': 'verbose',
+            'encoding': 'utf-8',
+        },
+        'console': {
+            'level': 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        'django.db.backends': {
+            'handlers': ['slow_query_file'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        '': {
+            'handlers': ['app_file', 'console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
 }

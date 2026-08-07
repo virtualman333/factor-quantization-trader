@@ -14,6 +14,7 @@ from apps.account.serializers import (
 )
 from apps.account.services import AccountService
 from core.okx_client import OKXClient, reset_okx_client
+from core.redis_monitor import get_redis_memory_info
 
 
 def get_active_credential(user):
@@ -38,6 +39,15 @@ class SystemConfigViewSet(viewsets.ViewSet):
         config.save()
         reset_okx_client(user_id=request.user.id)
         return Response(SystemConfigSerializer(config).data)
+
+    @action(detail=False, methods=['get'])
+    def redis_status(self, request):
+        """Redis 内存使用监控（INFO 解析）"""
+        try:
+            info = get_redis_memory_info()
+            return Response(info)
+        except Exception as e:
+            return Response({'error': f'Redis 不可用: {e}'}, status=500)
 
 
 class OKXCredentialViewSet(viewsets.ModelViewSet):

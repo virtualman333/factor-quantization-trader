@@ -1,0 +1,14 @@
+- generic [ref=e4]:
+  - generic [ref=e5]: 因子量化交易系统
+  - generic [ref=e7]:
+    - generic [ref=e8]:
+      - generic [ref=e9]:
+        - generic [ref=e10]: "*用户名"
+        - textbox "*用户名" [ref=e14]:
+          - /placeholder: 请输入用户名
+      - generic [ref=e16]:
+        - generic [ref=e17]: "*密码"
+        - textbox "*密码" [ref=e21]:
+          - /placeholder: 请输入密码
+      - button "登录" [ref=e25] [cursor=pointer]
+    - generic [ref=e27]: 没有账号？立即注册

@@ -66,7 +66,10 @@ echo [5/5] 启动 Django 后端 (端口 8000)...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%ROOT%venv\Scripts\python.exe' -ArgumentList 'manage.py','runserver','0.0.0.0:8000','--noreload' -WorkingDirectory '%ROOT%' -WindowStyle Hidden -RedirectStandardOutput '%ROOT%logs\django.log' -RedirectStandardError '%ROOT%logs\django_err.log'"
 
 ::: ========== 6. 启动前端 Vite ==========
-echo [6/5] 启动前端 Vite (端口 5173)...
+echo [6/6] 启动 Flower Celery 监控 (端口 5555)...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%ROOT%venv\Scripts\celery.exe' -ArgumentList '-A','config','flower','--port=5555' -WorkingDirectory '%ROOT%' -WindowStyle Hidden -RedirectStandardOutput '%ROOT%logs\flower.log' -RedirectStandardError '%ROOT%logs\flower_err.log'"
+
+echo [7/6] 启动前端 Vite (端口 5173)...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','npm run dev' -WorkingDirectory '%ROOT%frontend' -WindowStyle Hidden -RedirectStandardOutput '%ROOT%logs\vite.log' -RedirectStandardError '%ROOT%logs\vite_err.log'"
 
 echo.
@@ -77,9 +80,11 @@ echo.
 echo  ========================================
 echo   快速启动完成！
 echo.
-echo   前端:     http://localhost:5173
-echo   后端 API: http://localhost:8000/api/
-echo   Admin:   http://localhost:8000/admin/
+echo   前端:       http://localhost:5173
+echo   后端 API:   http://localhost:8000/api/
+echo   Admin:      http://localhost:8000/admin/
+echo   Silk 分析:  http://localhost:8000/silk/
+echo   Flower 监控: http://localhost:5555/
 echo.
 echo   日志目录: %ROOT%logs
 echo   停止服务: 运行 stop.bat
