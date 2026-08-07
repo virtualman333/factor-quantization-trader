@@ -1,10 +1,16 @@
-"""全局 API 错误中间件。
+"""全局 API 错误中间件 & 请求日志中间件。
 
 捕获 Django 原生 404/500 等未由 DRF 处理的异常，统一返回 JSON 格式。
+记录 API 请求耗时与状态码。
 """
+
+import logging
+import time
 
 from django.http import JsonResponse
 from django.conf import settings
+
+logger = logging.getLogger('api.request')
 
 
 class ApiErrorMiddleware:
@@ -45,3 +51,43 @@ class ApiErrorMiddleware:
             },
             status=500,
         )
+
+
+class RequestLogMiddleware:
+    """记录所有 API 请求的方法、路径、状态码和耗时。"""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        start_time = time.time()
+        response = self.get_response(request)
+        duration = (time.time() - start_time) * 1000
+        status_code = response.status_code
+        method = request.method
+        path = request.path
+        user = getattr(request, 'user', None)
+        username = user.username if user and user.is_authenticated else 'anonymous'
+        client_ip = self._get_client_ip(request)
+        if status_code >= 500:
+            logger.error(
+                '%s %s | %s | %s | %.1fms | client=%s',
+                method, path, status_code, username, duration, client_ip,
+            )
+        elif status_code >= 400:
+            logger.warning(
+                '%s %s | %s | %s | %.1fms | client=%s',
+                method, path, status_code, username, duration, client_ip,
+            )
+        else:
+            logger.info(
+                '%s %s | %s | %s | %.1fms | client=%s',
+                method, path, status_code, username, duration, client_ip,
+            )
+        return response
+
+    def _get_client_ip(self, request):
+        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+        if x_forwarded_for:
+            return x_forwarded_for.split(',')[0].strip()
+        return request.META.get('REMOTE_ADDR', 'unknown')

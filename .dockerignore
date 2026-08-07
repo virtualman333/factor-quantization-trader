@@ -34,15 +34,10 @@ db.sqlite3-journal
 media/
 staticfiles/
 
-# Environment variables
+# Environment variables (keep .env.example, exclude actual .env)
 .env
 .env.local
 .env.*.local
-
-# Keep template files; exclude actual secrets
-.env.dev
-.env.staging
-.env.prod
 
 # IDE
 .idea/
@@ -55,10 +50,6 @@ staticfiles/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
-frontend/.playwright-cli/
-frontend/*.png
-frontend/network.txt
-frontend/django_*.log
 
 # OS
 .DS_Store
@@ -66,7 +57,12 @@ Thumbs.db
 
 # Project specific
 server.log
+django_out.txt
 
-# Logs
-logs/
-*.log.*
+# Docker
+.docker/
+docker-compose.override.yml
+
+# Git
+.git/
+.gitignore

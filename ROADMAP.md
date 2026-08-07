@@ -7,10 +7,10 @@
 
 > 当前系统为单用户设计（全局 SystemConfig、全局 OKX 客户端单例），
 > 需要改造为多用户架构，每个用户独立管理自己的策略和凭证。
-- [ ] **管理员功能**
-  - [ ] 系统级配置（全局风控参数、市场数据同步）
-  - [ ] 用户使用统计面板
-  - [ ] 用户配额管理（API 调用频率、策略数量上限）
+- [x] **管理员功能**
+  - [x] 系统级配置（全局风控参数、市场数据同步）
+  - [x] 用户使用统计面板
+  - [x] 用户配额管理（API 调用频率、策略数量上限）
 
 ---
 
@@ -33,22 +33,29 @@
 
 ## 🟡 P1 — 运维基础设施
 
-- [ ] **Docker 容器化**
-  - [ ] `Dockerfile`（Python 后端）
-  - [ ] `Dockerfile`（Vue 前端 + Nginx）
-  - [ ] `docker-compose.yml`（MySQL + Redis + Django + Celery + Nginx）
-  - [ ] `.dockerignore`
+- [x] **Docker 容器化**
+  - [x] `Dockerfile`（Python 后端 + gunicorn）
+  - [x] `Dockerfile.celery`（Celery Worker）
+  - [x] `Dockerfile.celery-beat`（Celery Beat）
+  - [x] `Dockerfile.frontend`（Node 编译 + Nginx 托管）
+  - [x] `docker-compose.yml`（MySQL 8.0 + Redis 7 + Django + Celery + Nginx，含健康检查）
+  - [x] `.dockerignore`
+  - [x] Nginx 反向代理配置 + MySQL 初始化脚本
 
-- [ ] **日志系统**
-  - [ ] `LOGGING` 配置（控制台 + 文件 + 按日期轮转）
-  - [ ] 请求日志中间件（记录 API 调用耗时）
-  - [ ] Celery 任务日志独立文件
-  - [ ] 错误日志分级告警
+- [x] **日志系统**
+  - [x] `LOGGING` 配置（控制台 + 文件 + TimedRotatingFileHandler 按日期轮转）
+  - [x] 请求日志中间件 `RequestLogMiddleware`（方法/路径/状态码/耗时/用户/IP，按状态分级）
+  - [x] Celery 任务日志独立文件（celery.log / celery_error.log）
+  - [x] 错误日志分级（error.log 90天 / warning.log 60天 / app.log 30天）
+  - [x] 静态资源请求日志过滤 `SkipStaticRequestsFilter`
+  - [x] Sentry 集成预留（生产环境可选开启）
 
-- [ ] **环境管理**
-  - [ ] `production.py` 生产环境配置（覆盖 settings）
-  - [ ] 环境变量区分 dev/staging/prod
-  - [ ] Secret 管理（环境变量/.env 分级）
+- [x] **环境管理**
+  - [x] `production.py` 生产环境配置（HTTPS/HSTS/DB连接池/CORS/限流/Celery资源限制/Email通知）
+  - [x] 环境变量区分 dev/staging/prod（`.env.dev` / `.env.staging` / `.env.prod`）
+  - [x] Secret 管理（`ENV_FILE` 按环境加载，.gitignore 排除所有 `.env.*` 实际密钥）
+  - [x] `DJANGO_ENVIRONMENT` 变量标识当前运行环境
+  - [x] `gunicorn` + `sentry-sdk` 加入依赖
 
 ---
 
@@ -174,16 +181,16 @@
 
 | 分类 | 总数 | 已完成 | 进度 |
 |------|------|--------|------|
-| P0 安全与认证 | 10 | 0 | 0% |
-| P0 多用户支持 | 28 | 24 | 86% |
+| P0 安全与认证 | 10 | 10 | 100% |
+| P0 多用户支持 | 28 | 28 | 100% |
 | P1 实时数据 | 9 | 5 | 56% |
-| P1 运维基础设施 | 10 | 0 | 0% |
+| P1 运维基础设施 | 16 | 16 | 100% |
 | P1 API 文档 & 可观测性 | 8 | 0 | 0% |
 | P2 功能增强 | 37 | 0 | 0% |
 | P2 前端体验 | 12 | 0 | 0% |
 | P2 数据处理 | 6 | 0 | 0% |
 | P3 高级特性 | 10 | 0 | 0% |
-| **合计** | **130** | **29** | **22%** |
+| **合计** | **136** | **45** | **33%** |
 
 ---
 
@@ -197,8 +204,8 @@
 5. 统一错误响应格式
 
 ### Sprint 2（运维 & 实时，预计 1-2 周）
-1. Docker 容器化
-2. 日志系统配置
+1. ~~Docker 容器化~~ ✅
+2. ~~日志系统配置~~ ✅
 3. K 线/Ticker 实时 WebSocket 推送
 
 ### Sprint 3（实时 & 监控，预计 1-2 周）

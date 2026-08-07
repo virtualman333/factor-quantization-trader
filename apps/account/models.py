@@ -150,3 +150,65 @@ class SystemConfig(models.Model):
         return config
 
 
+class UserQuota(models.Model):
+    """用户配额管理"""
+
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                                 related_name='quota', verbose_name='所属用户')
+    max_strategies = models.PositiveIntegerField('最大策略数', default=10)
+    max_orders_per_day = models.PositiveIntegerField('每日最大下单次数', default=100)
+    max_api_calls_per_minute = models.PositiveIntegerField('每分钟最大API调用次数', default=60)
+    max_klines_per_request = models.PositiveIntegerField('单次K线查询上限', default=500)
+    is_trading_enabled = models.BooleanField('允许交易', default=True)
+    is_data_sync_enabled = models.BooleanField('允许数据同步', default=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        db_table = 'account_user_quota'
+        verbose_name = '用户配额'
+        verbose_name_plural = verbose_name
+
+    def __str__(self):
+        return f'{self.user.username} 配额'
+
+    @classmethod
+    def get_quota(cls, user):
+        quota, _ = cls.objects.get_or_create(user=user)
+        return quota
+
+
+class GlobalConfig(models.Model):
+    """系统级全局配置（仅管理员可修改，对所有用户生效）"""
+
+    id = models.PositiveIntegerField('配置ID', primary_key=True, default=1)
+    # 市场数据同步
+    market_sync_interval = models.PositiveIntegerField('行情同步间隔(秒)', default=60)
+    market_sync_instruments = models.BooleanField('同步交易品种', default=True)
+    market_sync_tickers = models.BooleanField('同步行情快照', default=True)
+    market_sync_klines = models.BooleanField('同步K线数据', default=True)
+    max_tickers_sync_count = models.PositiveIntegerField('行情快照最大同步品种数', default=50)
+    # 全局风控
+    global_max_position_pct = models.DecimalField('全局最大持仓比例', max_digits=5, decimal_places=4, default=0.2)
+    global_max_order_value = models.DecimalField('全局最大订单价值(USD)', max_digits=14, decimal_places=2, default=10000)
+    global_max_daily_loss = models.DecimalField('全局最大日亏损(USD)', max_digits=14, decimal_places=2, default=500)
+    global_stop_loss_pct = models.DecimalField('全局止损比例', max_digits=5, decimal_places=4, default=0.05)
+    global_min_order_interval = models.DecimalField('全局最小下单间隔(秒)', max_digits=5, decimal_places=2, default=1.0)
+    global_default_leverage = models.PositiveIntegerField('全局默认杠杆倍数', default=3)
+    # 注册控制
+    allow_registration = models.BooleanField('允许新用户注册', default=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        db_table = 'account_global_config'
+        verbose_name = '全局配置'
+        verbose_name_plural = verbose_name
+
+    def save(self, *args, **kwargs):
+        self.id = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def get_config(cls):
+        config, _ = cls.objects.get_or_create(id=1)
+        return config

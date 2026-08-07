@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { getToken } from '@/utils/token.js'
+import { getToken, getStoredUser } from '@/utils/token.js'
 
 const routes = [
   {
@@ -104,6 +104,12 @@ const routes = [
         component: () => import('@/views/settings/Profile.vue'),
         meta: { title: '个人中心', icon: 'User' },
       },
+      {
+        path: 'admin',
+        name: 'Admin',
+        component: () => import('@/views/settings/Admin.vue'),
+        meta: { title: '系统管理', icon: 'Setting', requiresAdmin: true },
+      },
     ],
   },
 ]
@@ -113,7 +119,7 @@ const router = createRouter({
   routes,
 })
 
-// 路由守卫：未登录时重定向到 /login
+// 路由守卫：未登录时重定向到 /login，管理员页面检查权限
 router.beforeEach((to, from, next) => {
   const token = getToken()
   if (to.path === '/login') {
@@ -127,6 +133,14 @@ router.beforeEach((to, from, next) => {
   if (to.matched.some((r) => r.meta.requiresAuth !== false) && !token) {
     next({ path: '/login', query: { redirect: to.fullPath } })
     return
+  }
+  // 管理员页面需要 is_staff 或 is_superuser
+  if (to.matched.some((r) => r.meta.requiresAdmin)) {
+    const user = getStoredUser()
+    if (!user || !(user.is_staff || user.is_superuser)) {
+      next('/dashboard')
+      return
+    }
   }
   next()
 })

@@ -7,7 +7,11 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 env = environ.Env()
-environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
+env_file = os.environ.get('ENV_FILE', os.path.join(BASE_DIR, '.env'))
+if os.path.exists(env_file):
+    environ.Env.read_env(env_file)
+
+ENVIRONMENT = env('DJANGO_ENVIRONMENT', default='development')
 
 SECRET_KEY = env('DJANGO_SECRET_KEY', default='dev-secret-key-change-in-production')
 DEBUG = env.bool('DJANGO_DEBUG', default=True)
@@ -35,6 +39,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
+    'core.middleware.RequestLogMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -43,6 +48,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'core.middleware.ApiErrorMiddleware',
+    'core.quota_middleware.UserQuotaMiddleware',
 ]
 
 # ---- 性能监控（仅开发环境启用，生产环境由 DJANGO_DEBUG=False 关闭） ----
@@ -221,68 +227,28 @@ RISK_CONFIG = {
     'MIN_ORDER_INTERVAL': 1.0,  # seconds
 }
 
-# ---- 数据库慢查询日志（>1s 记录到 logs/slow_queries.log） ----
-import logging
+# ── Logging ──────────────────────────────────────────────────────────────────
+from config.logging_config import LOGGING  # noqa: E402
 
-
-class SlowQueryFilter(logging.Filter):
-    def filter(self, record):
-        # Django db backend 日志的 record 带 duration 属性（秒）
-        return getattr(record, 'duration', 0) >= 1.0
-
-
-LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'filters': {
-        'slow_query': {'()': 'config.settings.SlowQueryFilter'},
-    },
-    'formatters': {
-        'slow': {
-            'format': '%(asctime)s [%(levelname)s] %(duration).3fs %(message)s',
-            'datefmt': '%Y-%m-%d %H:%M:%S',
-        },
-        'verbose': {
-            'format': '%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-            'datefmt': '%Y-%m-%d %H:%M:%S',
-        },
-    },
-    'handlers': {
-        'slow_query_file': {
-            'level': 'DEBUG',
-            'class': 'logging.handlers.RotatingFileHandler',
-            'filename': str(BASE_DIR / 'logs' / 'slow_queries.log'),
-            'maxBytes': 10 * 1024 * 1024,  # 10MB
-            'backupCount': 5,
-            'formatter': 'slow',
-            'filters': ['slow_query'],
-            'encoding': 'utf-8',
-        },
-        'app_file': {
-            'level': 'INFO',
-            'class': 'logging.handlers.RotatingFileHandler',
-            'filename': str(BASE_DIR / 'logs' / 'app.log'),
-            'maxBytes': 10 * 1024 * 1024,
-            'backupCount': 5,
-            'formatter': 'verbose',
-            'encoding': 'utf-8',
-        },
-        'console': {
-            'level': 'INFO',
-            'class': 'logging.StreamHandler',
-            'formatter': 'verbose',
-        },
-    },
-    'loggers': {
-        'django.db.backends': {
-            'handlers': ['slow_query_file'],
-            'level': 'DEBUG',
-            'propagate': False,
-        },
-        '': {
-            'handlers': ['app_file', 'console'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-    },
-}
+# ── Sentry (optional) ────────────────────────────────────────────────────────
+SENTRY_DSN = env('SENTRY_DSN', default='')
+if SENTRY_DSN and not DEBUG:
+    import sentry_sdk
+    from sentry_sdk.integrations.django import DjangoIntegration
+    from sentry_sdk.integrations.celery import CeleryIntegration
+    from sentry_sdk.integrations.logging import LoggingIntegration
+    import logging as sentry_logging
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[
+            DjangoIntegration(),
+            CeleryIntegration(),
+            LoggingIntegration(
+                level=sentry_logging.INFO,
+                event_level=sentry_logging.ERROR,
+            ),
+        ],
+        environment=ENVIRONMENT,
+        traces_sample_rate=0.1 if ENVIRONMENT == 'production' else 1.0,
+        send_default_pii=False,
+    )
