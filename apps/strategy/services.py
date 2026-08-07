@@ -47,13 +47,13 @@ class StrategyService:
         return atr
 
     @staticmethod
-    def generate_signals(strategy: StrategyConfig) -> List[SignalRecord]:
+    def generate_signals(strategy: StrategyConfig, user=None) -> List[SignalRecord]:
         """为策略的所有标的生成交易信号"""
         if strategy.strategy_type == 'trend_follow':
-            return StrategyService._generate_trend_signals(strategy)
+            return StrategyService._generate_trend_signals(strategy, user=user)
         if strategy.strategy_type == 'volume_breakout':
-            return StrategyService._generate_volume_breakout_signals(strategy)
-        return StrategyService._generate_factor_signals(strategy)
+            return StrategyService._generate_volume_breakout_signals(strategy, user=user)
+        return StrategyService._generate_factor_signals(strategy, user=user)
 
     # ========== 放量跟随策略参数 ==========
     DEFAULT_VOLUME_PARAMS = {
@@ -82,15 +82,14 @@ class StrategyService:
         return val
 
     @staticmethod
-    def _generate_factor_signals(strategy: StrategyConfig) -> List[SignalRecord]:
+    def _generate_factor_signals(strategy: StrategyConfig, user=None) -> List[SignalRecord]:
         """基于因子综合评分生成信号"""
         signals = []
 
         for symbol in strategy.symbols:
             try:
-                market_service = MarketDataService()
-                market_service.fetch_klines(inst_id=symbol, bar=strategy.bar, limit=200)
-                df = market_service.get_klines_df(inst_id=symbol, bar=strategy.bar, limit=200)
+                MarketDataService.fetch_klines(inst_id=symbol, bar=strategy.bar, limit=200, user=user)
+                df = MarketDataService.get_klines_df(inst_id=symbol, bar=strategy.bar, limit=200, user=user)
 
                 if df.empty:
                     logger.warning(f'{symbol} 无K线数据，跳过信号生成')
@@ -129,10 +128,10 @@ class StrategyService:
         return signals
 
     @staticmethod
-    def _generate_trend_signals(strategy: StrategyConfig) -> List[SignalRecord]:
+    def _generate_trend_signals(strategy: StrategyConfig, user=None) -> List[SignalRecord]:
         """基于趋势跟踪生成分钟级买卖信号"""
         signals = []
-        client = get_okx_client()
+        client = get_okx_client(user=user)
 
         # 获取当前持仓以判断是开仓还是平仓
         positions = {}
@@ -145,9 +144,8 @@ class StrategyService:
 
         for symbol in strategy.symbols:
             try:
-                market_service = MarketDataService()
-                market_service.fetch_klines(inst_id=symbol, bar=strategy.bar, limit=200)
-                df = market_service.get_klines_df(inst_id=symbol, bar=strategy.bar, limit=200)
+                MarketDataService.fetch_klines(inst_id=symbol, bar=strategy.bar, limit=200, user=user)
+                df = MarketDataService.get_klines_df(inst_id=symbol, bar=strategy.bar, limit=200, user=user)
 
                 if len(df) < 50:
                     logger.warning(f'{symbol} K线数据不足，跳过')
@@ -263,7 +261,7 @@ class StrategyService:
 
     # ========== 放量跟随策略信号 ==========
     @staticmethod
-    def _generate_volume_breakout_signals(strategy: StrategyConfig) -> List[SignalRecord]:
+    def _generate_volume_breakout_signals(strategy: StrategyConfig, user=None) -> List[SignalRecord]:
         """放量跟随策略：放量上涨做多 / 放量下跌做空 + 趋势过滤 + ATR过滤 + 冷却 + 强制反向平仓
 
         适用 ETH/USDT 1min，现货/合约均可。
@@ -273,7 +271,7 @@ class StrategyService:
         from datetime import timedelta
 
         signals = []
-        client = get_okx_client()
+        client = get_okx_client(user=user)
 
         vol_ma_len = int(StrategyService._vb_param(strategy, 'vol_ma_len', 20))
         vol_ratio = float(StrategyService._vb_param(strategy, 'vol_ratio', 1.8))
@@ -309,9 +307,8 @@ class StrategyService:
 
         for symbol in strategy.symbols:
             try:
-                market_service = MarketDataService()
-                market_service.fetch_klines(inst_id=symbol, bar=strategy.bar, limit=kline_limit)
-                df = market_service.get_klines_df(inst_id=symbol, bar=strategy.bar, limit=kline_limit)
+                MarketDataService.fetch_klines(inst_id=symbol, bar=strategy.bar, limit=kline_limit, user=user)
+                df = MarketDataService.get_klines_df(inst_id=symbol, bar=strategy.bar, limit=kline_limit, user=user)
                 if len(df) < trend_ma_len + atr_len:
                     logger.warning(f'{symbol} K线不足，跳过')
                     continue
@@ -460,13 +457,13 @@ class StrategyService:
 
     # ========== 信号执行 ==========
     @staticmethod
-    def execute_signal(signal: SignalRecord) -> Optional[Dict]:
+    def execute_signal(signal: SignalRecord, user=None) -> Optional[Dict]:
         """执行单个交易信号（支持合约杠杆）"""
         if signal.is_executed:
             logger.warning(f'信号 #{signal.id} 已执行，跳过')
             return None
 
-        client = get_okx_client()
+        client = get_okx_client(user=user)
         strategy = signal.strategy
         td_mode = signal.td_mode or strategy.td_mode or 'cash'
         leverage = float(signal.leverage or strategy.leverage or 1)
@@ -607,7 +604,7 @@ class StrategyService:
 
         if strategy.strategy_type != 'volume_breakout':
             return
-        client = get_okx_client()
+        client = get_okx_client(user=strategy.user)
         trailing_trigger = float(StrategyService._vb_param(strategy, 'trailing_trigger', 0.5))
         trailing_factor = float(StrategyService._vb_param(strategy, 'trailing_factor', 0.8))
         today = timezone.now().date()
@@ -615,10 +612,8 @@ class StrategyService:
         open_positions = TrackedPosition.objects.filter(strategy=strategy, is_open=True)
         for tp in open_positions:
             try:
-                market_service = MarketDataService()
-                limit = 5
-                market_service.fetch_klines(inst_id=tp.inst_id, bar=strategy.bar, limit=limit)
-                df = market_service.get_klines_df(inst_id=tp.inst_id, bar=strategy.bar, limit=limit)
+                MarketDataService.fetch_klines(inst_id=tp.inst_id, bar=strategy.bar, limit=limit, user=strategy.user)
+                df = MarketDataService.get_klines_df(inst_id=tp.inst_id, bar=strategy.bar, limit=limit, user=strategy.user)
                 if df.empty:
                     continue
                 cur_price = float(df['close'].iloc[-1])
@@ -740,13 +735,13 @@ class StrategyService:
     # ========== 回测 ==========
     @staticmethod
     def run_backtest(strategy: StrategyConfig,
-                     start_date: datetime, end_date: datetime) -> BacktestResult:
+                     start_date: datetime, end_date: datetime, user=None) -> BacktestResult:
         """简单回测引擎（基于历史K线）"""
         from apps.market.models import KLine
         from apps.account.models import SystemConfig
         import numpy as np
 
-        env = SystemConfig.get_config().active_environment
+        env = SystemConfig.get_config(user=user).active_environment
 
         # 获取所有标的的历史K线（按当前环境过滤）
         all_klines = KLine.objects.filter(
@@ -775,7 +770,7 @@ class StrategyService:
                 sym = kline.instrument.inst_id
                 # 获取该时间点前的K线数据用于因子计算
                 df = MarketDataService.get_klines_df(
-                    inst_id=sym, bar=strategy.bar, limit=200
+                    inst_id=sym, bar=strategy.bar, limit=200, user=user
                 )
                 if df.empty:
                     continue

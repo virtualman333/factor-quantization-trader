@@ -4,6 +4,7 @@ from .models import StrategyConfig, FactorDefinition, SignalRecord, BacktestResu
 
 class FactorDefinitionSerializer(serializers.ModelSerializer):
     factor_type_display = serializers.CharField(source='get_factor_type_display', read_only=True)
+    username = serializers.CharField(source='user.username', read_only=True)
 
     class Meta:
         model = FactorDefinition
@@ -25,15 +26,16 @@ class StrategyConfigSerializer(serializers.ModelSerializer):
     direction_display = serializers.CharField(source='get_direction_display', read_only=True)
     strategy_type_display = serializers.CharField(source='get_strategy_type_display', read_only=True)
     td_mode_display = serializers.CharField(source='get_td_mode_display', read_only=True)
+    username = serializers.CharField(source='user.username', read_only=True)
     signals_count = serializers.SerializerMethodField()
 
     class Meta:
         model = StrategyConfig
         fields = '__all__'
+        extra_kwargs = {'user': {'read_only': True}}
 
     def get_signals_count(self, obj):
         return obj.signals.count()
-
 
 
 class BacktestResultSerializer(serializers.ModelSerializer):

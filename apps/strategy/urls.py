@@ -6,10 +6,10 @@ from .views import (
 )
 
 router = DefaultRouter()
-router.register(r'configs', StrategyConfigViewSet)
-router.register(r'factors', FactorDefinitionViewSet)
-router.register(r'signals', SignalRecordViewSet)
-router.register(r'backtests', BacktestResultViewSet)
+router.register(r'configs', StrategyConfigViewSet, basename='strategy-config')
+router.register(r'factors', FactorDefinitionViewSet, basename='factor-definition')
+router.register(r'signals', SignalRecordViewSet, basename='signal-record')
+router.register(r'backtests', BacktestResultViewSet, basename='backtest-result')
 
 urlpatterns = [
     path('', include(router.urls)),

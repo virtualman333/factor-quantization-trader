@@ -40,7 +40,7 @@ class InstrumentViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class KLineViewSet(viewsets.ReadOnlyModelViewSet):
-    """K线数据 API（自动按当前交易环境过滤）"""
+    """K线数据 API（自动按当前交易环境过滤，K线数据共享不过滤用户）"""
 
     queryset = KLine.objects.none()
     serializer_class = KLineSerializer
@@ -50,7 +50,7 @@ class KLineViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         """自动过滤当前激活的交易环境"""
         try:
-            env = SystemConfig.get_config().active_environment
+            env = SystemConfig.get_config(user=self.request.user).active_environment
         except Exception:
             env = 'demo'
         return KLine.objects.filter(environment=env)
@@ -67,9 +67,9 @@ class KLineViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({'error': 'inst_id is required'}, status=400)
 
         count = MarketDataService.fetch_klines_history(
-            inst_id=inst_id, bar=bar, total=int(limit)
+            inst_id=inst_id, bar=bar, total=int(limit), user=request.user
         )
-        env = MarketDataService._get_current_env()
+        env = MarketDataService._get_current_env(user=request.user)
         return Response({'count': count, 'inst_id': inst_id, 'bar': bar, 'environment': env})
 
     @action(detail=False, methods=['get'])
@@ -100,7 +100,7 @@ class KLineViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({'error': 'inst_id is required'}, status=400)
 
         try:
-            env = SystemConfig.get_config().active_environment
+            env = SystemConfig.get_config(user=request.user).active_environment
         except Exception:
             env = 'demo'
 

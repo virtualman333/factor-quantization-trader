@@ -20,9 +20,9 @@ class AccountService:
     """账户管理服务"""
 
     @staticmethod
-    def get_balance_from_api() -> Dict:
+    def get_balance_from_api(user=None) -> Dict:
         """从 OKX 获取实时余额"""
-        client = get_okx_client()
+        client = get_okx_client(user=user)
         result = client.get_account_balance()
         if result['code'] != '0':
             raise Exception(f'获取余额失败: {result.get("msg")}')
@@ -50,9 +50,9 @@ class AccountService:
         }
 
     @staticmethod
-    def get_positions_from_api(inst_type: str = '') -> Dict:
+    def get_positions_from_api(inst_type: str = '', user=None) -> Dict:
         """从 OKX 获取实时持仓"""
-        client = get_okx_client()
+        client = get_okx_client(user=user)
         result = client.get_positions(inst_type=inst_type)
         if result['code'] != '0':
             raise Exception(f'获取持仓失败: {result.get("msg")}')
@@ -77,12 +77,13 @@ class AccountService:
         return positions
 
     @staticmethod
-    def snapshot_balance() -> List[BalanceSnapshot]:
+    def snapshot_balance(user=None) -> List[BalanceSnapshot]:
         """保存余额快照"""
-        balance = AccountService.get_balance_from_api()
+        balance = AccountService.get_balance_from_api(user=user)
         snapshots = []
         for detail in balance['details']:
             snap = BalanceSnapshot.objects.create(
+                user=user if user and user.is_authenticated else None,
                 ccy=detail['ccy'],
                 total_eq=detail['total_eq'],
                 avail_eq=detail['avail_eq'],
@@ -95,12 +96,13 @@ class AccountService:
         return snapshots
 
     @staticmethod
-    def snapshot_positions(inst_type: str = '') -> List[PositionSnapshot]:
+    def snapshot_positions(inst_type: str = '', user=None) -> List[PositionSnapshot]:
         """保存持仓快照"""
-        positions = AccountService.get_positions_from_api(inst_type)
+        positions = AccountService.get_positions_from_api(inst_type, user=user)
         snapshots = []
         for pos in positions.values():
             snap = PositionSnapshot.objects.create(
+                user=user if user and user.is_authenticated else None,
                 inst_id=pos.inst_id,
                 inst_type=inst_type or 'SWAP',
                 pos_side='long' if pos.pos > 0 else 'short',
@@ -116,12 +118,14 @@ class AccountService:
         return snapshots
 
     @staticmethod
-    def record_net_value() -> NetValueHistory:
+    def record_net_value(user=None) -> NetValueHistory:
         """记录净值"""
-        balance = AccountService.get_balance_from_api()
+        balance = AccountService.get_balance_from_api(user=user)
         total_eq_usd = balance['total_eq_usd']
 
-        last_record = NetValueHistory.objects.order_by('-record_time').first()
+        last_record = NetValueHistory.objects.filter(
+            user=user if user and user.is_authenticated else None
+        ).order_by('-record_time').first()
         daily_pnl = Decimal('0')
         pnl_ratio = Decimal('0')
 
@@ -129,6 +133,7 @@ class AccountService:
             total_pnl = total_eq_usd - last_record.total_eq
             # 简单日盈亏：当日首笔记录与当前比较
             today_first = NetValueHistory.objects.filter(
+                user=user if user and user.is_authenticated else None,
                 record_time__date=timezone.now().date()
             ).order_by('record_time').first()
             if today_first:
@@ -138,6 +143,7 @@ class AccountService:
             total_pnl = Decimal('0')
 
         record = NetValueHistory.objects.create(
+            user=user if user and user.is_authenticated else None,
             total_eq=total_eq_usd,
             total_pnl=total_pnl,
             daily_pnl=daily_pnl,

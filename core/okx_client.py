@@ -345,30 +345,45 @@ class OKXClient:
         return self._safe_call(self.funding.get_deposit_address, ccy=ccy)
 
 
-# 全局客户端单例
-_okx_client: Optional[OKXClient] = None
+# 按用户缓存的客户端
+_user_clients: dict = {}
 
 
-def get_okx_client() -> OKXClient:
-    """获取 OKX 客户端单例；按当前系统环境选择对应凭证"""
-    global _okx_client
-    if _okx_client is None:
-        try:
-            from apps.account.models import OKXCredential, SystemConfig
+def reset_okx_client(user_id=None):
+    """重置指定用户（或所有用户）的 OKX 客户端缓存"""
+    global _user_clients
+    if user_id is not None:
+        _user_clients.pop(user_id, None)
+    else:
+        _user_clients.clear()
+
+
+def get_okx_client(user=None) -> OKXClient:
+    """获取 OKX 客户端；按当前系统环境选择对应凭证，支持按用户隔离"""
+    global _user_clients
+    user_id = user.id if user and user.is_authenticated else 0
+    if user_id in _user_clients:
+        return _user_clients[user_id]
+    try:
+        from apps.account.models import OKXCredential, SystemConfig
+        if user and user.is_authenticated:
+            config = SystemConfig.get_config(user=user)
+            credential = OKXCredential.objects.filter(user=user, name=config.active_environment).first()
+        else:
             config = SystemConfig.get_config()
             credential = OKXCredential.objects.filter(name=config.active_environment).first()
-        except Exception:
-            credential = None
-
-        if credential:
-            _okx_client = OKXClient(
-                api_key=credential.api_key,
-                api_secret=credential.api_secret,
-                passphrase=credential.passphrase,
-                flag=credential.flag,
-            )
-        else:
-            _okx_client = OKXClient()
-    return _okx_client
+    except Exception:
+        credential = None
+    if credential:
+        client = OKXClient(
+            api_key=credential.api_key,
+            api_secret=credential.api_secret,
+            passphrase=credential.passphrase,
+            flag=credential.flag,
+        )
+    else:
+        client = OKXClient()
+    _user_clients[user_id] = client
+    return client
 
 

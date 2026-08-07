@@ -17,12 +17,15 @@ def create_default_admin(apps, schema_editor):
     if User.objects.filter(username='admin').exists():
         return
     password = os.environ.get('DEFAULT_ADMIN_PASSWORD', 'admin123')
-    user = User(
+    user = User.objects.create(
         username='admin',
         is_staff=True,
         is_superuser=True,
+        password='pbkdf2_sha256$' + password,  # placeholder, will be fixed by manage.py
     )
-    user.set_password(password)
+    # set password properly using the real model
+    from django.contrib.auth.hashers import make_password
+    user.password = make_password(password)
     user.save()
 
 

@@ -11,9 +11,11 @@ from apps.orders.services import OrderService
 
 class TradeOrderViewSet(viewsets.ModelViewSet):
     """交易订单 API"""
-    queryset = TradeOrder.objects.all()
     serializer_class = TradeOrderSerializer
     filterset_fields = ['inst_id', 'side', 'ord_type', 'state', 'source']
+
+    def get_queryset(self):
+        return TradeOrder.objects.filter(user=self.request.user)
 
     def create(self, request, *args, **kwargs):
         """提交新订单"""
@@ -28,6 +30,7 @@ class TradeOrderViewSet(viewsets.ModelViewSet):
                 source=request.data.get('source', 'api'),
                 strategy_id=request.data.get('strategy_id'),
                 signal_id=request.data.get('signal_id'),
+                user=request.user,
             )
             return Response(result, status=201)
         except Exception as e:
@@ -41,6 +44,7 @@ class TradeOrderViewSet(viewsets.ModelViewSet):
             result = OrderService.cancel_order(
                 ord_id=order.ord_id,
                 inst_id=order.inst_id,
+                user=request.user,
             )
             return Response(result)
         except Exception as e:
@@ -51,7 +55,7 @@ class TradeOrderViewSet(viewsets.ModelViewSet):
         """同步订单状态"""
         order = self.get_object()
         try:
-            updated = OrderService.sync_order_status(order.ord_id)
+            updated = OrderService.sync_order_status(order.ord_id, user=request.user)
             if updated:
                 serializer = TradeOrderSerializer(updated)
                 return Response(serializer.data)
@@ -62,7 +66,7 @@ class TradeOrderViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'])
     def sync_pending(self, request):
         """同步所有待处理订单"""
-        count = OrderService.sync_pending_orders()
+        count = OrderService.sync_pending_orders(user=request.user)
         return Response({'synced': count})
 
     @action(detail=False, methods=['post'])
@@ -75,6 +79,7 @@ class TradeOrderViewSet(viewsets.ModelViewSet):
                 side=request.data.get('side', ''),
                 td_mode=request.data.get('td_mode', 'cash'),
                 source=request.data.get('source', 'api'),
+                user=request.user,
             )
             return Response(result, status=201)
         except Exception as e:
@@ -83,6 +88,8 @@ class TradeOrderViewSet(viewsets.ModelViewSet):
 
 class OrderLogViewSet(viewsets.ReadOnlyModelViewSet):
     """订单日志 API"""
-    queryset = OrderLog.objects.all()
     serializer_class = OrderLogSerializer
     filterset_fields = ['order', 'action']
+
+    def get_queryset(self):
+        return OrderLog.objects.filter(order__user=self.request.user)

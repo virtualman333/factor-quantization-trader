@@ -24,9 +24,9 @@ class MarketDataService:
 
     # ========== 交易品种 ==========
     @staticmethod
-    def sync_instruments(inst_type: str = 'SPOT') -> int:
+    def sync_instruments(inst_type: str = 'SPOT', user=None) -> int:
         """同步交易品种信息到本地数据库"""
-        client = get_okx_client()
+        client = get_okx_client(user=user)
         result = client.get_instruments(inst_type=inst_type)
         if result['code'] != '0':
             raise MarketDataUnavailable(f'获取品种信息失败: {result.get("msg")}')
@@ -55,17 +55,17 @@ class MarketDataService:
 
     # ========== K线数据 ==========
     @staticmethod
-    def _get_current_env() -> str:
+    def _get_current_env(user=None) -> str:
         """获取当前激活的交易环境"""
         try:
-            return SystemConfig.get_config().active_environment
+            return SystemConfig.get_config(user=user).active_environment
         except Exception:
             return 'demo'
 
     @staticmethod
-    def _parse_kline_item(instrument, bar, item) -> KLine:
+    def _parse_kline_item(instrument, bar, item, user=None) -> KLine:
         """将 OKX 返回的单条 K 线数据解析并存入数据库"""
-        env = MarketDataService._get_current_env()
+        env = MarketDataService._get_current_env(user=user)
         ts = datetime.fromtimestamp(int(item[0]) / 1000, tz=timezone.get_current_timezone())
         kline, created = KLine.objects.update_or_create(
             instrument=instrument,
@@ -87,9 +87,10 @@ class MarketDataService:
 
     @staticmethod
     def fetch_klines(inst_id: str, bar: str = '1H', limit: int = 100,
-                     before: str = '', after: str = '', is_history: bool = True) -> List[KLine]:
+                     before: str = '', after: str = '', is_history: bool = True,
+                     user=None) -> List[KLine]:
         """获取并存储K线数据（单次请求）"""
-        client = get_okx_client()
+        client = get_okx_client(user=user)
 
         try:
             instrument = Instrument.objects.get(inst_id=inst_id)
@@ -110,23 +111,23 @@ class MarketDataService:
         if result['code'] != '0':
             raise MarketDataUnavailable(f'获取K线失败: {result.get("msg")}')
 
-        env = MarketDataService._get_current_env()
+        env = MarketDataService._get_current_env(user=user)
         klines = []
         for item in result.get('data', []):
-            klines.append(MarketDataService._parse_kline_item(instrument, bar, item))
+            klines.append(MarketDataService._parse_kline_item(instrument, bar, item, user=user))
 
         logger.info(f'[{env}] 获取 {inst_id} {bar} K线 {len(klines)} 条')
         return klines
 
     @staticmethod
     def fetch_klines_history(inst_id: str, bar: str = '1H',
-                              total: int = 300, before: str = '') -> int:
+                              total: int = 300, before: str = '', user=None) -> int:
         """递归从OKX拉取历史K线并存入数据库，直到达到目标数量或没有更多数据。
         每次API请求最多拉取300条（OKX历史K线接口上限），循环拉取直到满足 total 条。
         返回实际存入的条数。
         """
-        client = get_okx_client()
-        env = MarketDataService._get_current_env()
+        client = get_okx_client(user=user)
+        env = MarketDataService._get_current_env(user=user)
         try:
             instrument = Instrument.objects.get(inst_id=inst_id)
         except Instrument.DoesNotExist:
@@ -152,7 +153,7 @@ class MarketDataService:
                 break
 
             for item in items:
-                MarketDataService._parse_kline_item(instrument, bar, item)
+                MarketDataService._parse_kline_item(instrument, bar, item, user=user)
 
             total_stored += len(items)
             remaining -= len(items)
@@ -170,10 +171,10 @@ class MarketDataService:
         return total_stored
 
     @staticmethod
-    def get_klines_df(inst_id: str, bar: str = '1H', limit: int = 200) -> 'pd.DataFrame':
+    def get_klines_df(inst_id: str, bar: str = '1H', limit: int = 200, user=None) -> 'pd.DataFrame':
         """从数据库获取K线并返回DataFrame（用于因子计算，自动过滤当前环境）"""
         import pandas as pd
-        env = MarketDataService._get_current_env()
+        env = MarketDataService._get_current_env(user=user)
         klines = KLine.objects.filter(
             environment=env, instrument__inst_id=inst_id, bar=bar
         ).order_by('timestamp')[:limit]
@@ -197,9 +198,9 @@ class MarketDataService:
 
     # ========== 行情快照 ==========
     @staticmethod
-    def sync_ticker(inst_id: str) -> Ticker:
+    def sync_ticker(inst_id: str, user=None) -> Ticker:
         """同步单个品种行情快照"""
-        client = get_okx_client()
+        client = get_okx_client(user=user)
         result = client.get_ticker(inst_id=inst_id)
         if result['code'] != '0':
             raise MarketDataUnavailable(f'获取行情失败: {result.get("msg")}')
@@ -233,9 +234,9 @@ class MarketDataService:
 
     # ========== 资金费率 ==========
     @staticmethod
-    def sync_funding_rate(inst_id: str, limit: int = 100) -> int:
+    def sync_funding_rate(inst_id: str, limit: int = 100, user=None) -> int:
         """同步资金费率"""
-        client = get_okx_client()
+        client = get_okx_client(user=user)
         result = client.get_funding_rate_history(inst_id=inst_id, limit=limit)
         if result['code'] != '0':
             raise MarketDataUnavailable(f'获取资金费率失败: {result.get("msg")}')

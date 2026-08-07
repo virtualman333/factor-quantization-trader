@@ -13,75 +13,72 @@ from apps.account.serializers import (
     OKXCredentialSerializer, SystemConfigSerializer,
 )
 from apps.account.services import AccountService
-from core.okx_client import OKXClient
+from core.okx_client import OKXClient, reset_okx_client
 
 
-def get_active_credential():
-    """根据系统当前环境获取对应凭证"""
-    config = SystemConfig.get_config()
-    return OKXCredential.objects.filter(name=config.active_environment).first()
+def get_active_credential(user):
+    """根据用户+当前环境获取对应凭证"""
+    config = SystemConfig.get_config(user=user)
+    return OKXCredential.objects.filter(user=user, name=config.active_environment).first()
 
 
 class SystemConfigViewSet(viewsets.ViewSet):
-    """系统全局配置 API"""
+    """系统配置 API（按用户隔离）"""
 
     def list(self, request):
-        config = SystemConfig.get_config()
+        config = SystemConfig.get_config(user=request.user)
         return Response(SystemConfigSerializer(config).data)
 
     def create(self, request):
-        config = SystemConfig.get_config()
+        config = SystemConfig.get_config(user=request.user)
         env = request.data.get('active_environment')
         if env not in ('demo', 'live'):
             return Response({'detail': 'active_environment 必须是 demo 或 live'}, status=400)
         config.active_environment = env
         config.save()
-        # 切换环境后重置 OKX 客户端
-        import core.okx_client as okx_client_module
-        okx_client_module._okx_client = None
+        reset_okx_client(user_id=request.user.id)
         return Response(SystemConfigSerializer(config).data)
 
 
 class OKXCredentialViewSet(viewsets.ModelViewSet):
-    """OKX API 凭证管理 API（按 demo / live 分别存储）"""
-    queryset = OKXCredential.objects.all().order_by('name')
+    """OKX API 凭证管理 API（按用户+环境分别存储）"""
     serializer_class = OKXCredentialSerializer
     lookup_field = 'name'
 
+    def get_queryset(self):
+        return OKXCredential.objects.filter(user=self.request.user).order_by('name')
+
     def get_object(self):
-        # 允许通过 name=demo 或 name=live 访问
         name = self.kwargs.get(self.lookup_field)
         if name in ('demo', 'live'):
-            obj, _ = OKXCredential.objects.get_or_create(name=name, defaults={
-                'api_key': '', 'api_secret': '', 'passphrase': '',
-                'flag': '1' if name == 'demo' else '0',
-            })
+            obj, _ = OKXCredential.objects.get_or_create(
+                user=self.request.user, name=name,
+                defaults={
+                    'api_key': '', 'api_secret': '', 'passphrase': '',
+                    'flag': '1' if name == 'demo' else '0',
+                }
+            )
             return obj
-        return super().get_object()
+        return OKXCredential.objects.get(user=self.request.user, name=name)
 
     def perform_create(self, serializer):
-        instance = serializer.save()
-        self._reset_okx_client()
+        serializer.save(user=self.request.user)
+        reset_okx_client(user_id=self.request.user.id)
 
     def perform_update(self, serializer):
         serializer.save()
-        self._reset_okx_client()
+        reset_okx_client(user_id=self.request.user.id)
 
     def perform_destroy(self, instance):
         instance.delete()
-        self._reset_okx_client()
-
-    def _reset_okx_client(self):
-        """凭证变更后重置全局 OKX 客户端单例"""
-        import core.okx_client as okx_client_module
-        okx_client_module._okx_client = None
+        reset_okx_client(user_id=self.request.user.id)
 
     @action(detail=False, methods=['get'])
     def active(self, request):
         """获取当前环境对应的凭证"""
-        credential = get_active_credential()
+        credential = get_active_credential(request.user)
         if not credential:
-            config = SystemConfig.get_config()
+            config = SystemConfig.get_config(user=request.user)
             return Response({'detail': f'未配置 {config.get_active_environment_display()} 凭证'}, status=404)
         serializer = self.get_serializer(credential)
         return Response(serializer.data)
@@ -92,10 +89,13 @@ class OKXCredentialViewSet(viewsets.ModelViewSet):
         env = request.query_params.get('env')
         if env not in ('demo', 'live'):
             return Response({'detail': 'env 参数必须是 demo 或 live'}, status=400)
-        credential, _ = OKXCredential.objects.get_or_create(name=env, defaults={
-            'api_key': '', 'api_secret': '', 'passphrase': '',
-            'flag': '1' if env == 'demo' else '0',
-        })
+        credential, _ = OKXCredential.objects.get_or_create(
+            user=request.user, name=env,
+            defaults={
+                'api_key': '', 'api_secret': '', 'passphrase': '',
+                'flag': '1' if env == 'demo' else '0',
+            }
+        )
         serializer = self.get_serializer(credential)
         return Response(serializer.data)
 
@@ -105,11 +105,11 @@ class OKXCredentialViewSet(viewsets.ModelViewSet):
         env = request.data.get('environment')
         if env not in ('demo', 'live'):
             return Response({'detail': 'environment 必须是 demo 或 live'}, status=400)
-        config = SystemConfig.get_config()
+        config = SystemConfig.get_config(user=request.user)
         config.active_environment = env
         config.save()
-        self._reset_okx_client()
-        credential = get_active_credential()
+        reset_okx_client(user_id=request.user.id)
+        credential = get_active_credential(request.user)
         return Response({
             'environment': env,
             'credential_configured': credential is not None and bool(credential.api_key),
@@ -123,11 +123,11 @@ class OKXCredentialViewSet(viewsets.ModelViewSet):
             return Response({'detail': 'env 参数必须是 demo 或 live'}, status=400)
 
         if env:
-            credential = OKXCredential.objects.filter(name=env).first()
+            credential = OKXCredential.objects.filter(user=request.user, name=env).first()
             env_label = '模拟盘' if env == 'demo' else '实盘'
         else:
-            credential = get_active_credential()
-            config = SystemConfig.get_config()
+            credential = get_active_credential(request.user)
+            config = SystemConfig.get_config(user=request.user)
             env_label = config.get_active_environment_display()
 
         if not credential or not credential.api_key:
@@ -148,19 +148,18 @@ class OKXCredentialViewSet(viewsets.ModelViewSet):
             return Response({'connected': False, 'error': str(e)}, status=400)
 
 
-
-
-
 class BalanceSnapshotViewSet(viewsets.ReadOnlyModelViewSet):
     """余额快照 API"""
-    queryset = BalanceSnapshot.objects.all()
     serializer_class = BalanceSnapshotSerializer
     filterset_fields = ['ccy']
+
+    def get_queryset(self):
+        return BalanceSnapshot.objects.filter(user=self.request.user)
 
     @action(detail=False, methods=['post'])
     def snapshot(self, request):
         """手动保存余额快照"""
-        snapshots = AccountService.snapshot_balance()
+        snapshots = AccountService.snapshot_balance(user=request.user)
         serializer = BalanceSnapshotSerializer(snapshots, many=True)
         return Response(serializer.data)
 
@@ -168,7 +167,7 @@ class BalanceSnapshotViewSet(viewsets.ReadOnlyModelViewSet):
     def live(self, request):
         """获取实时余额（直接从 OKX）"""
         try:
-            balance = AccountService.get_balance_from_api()
+            balance = AccountService.get_balance_from_api(user=request.user)
             return Response(balance)
         except Exception as e:
             return Response({'error': str(e)}, status=500)
@@ -176,15 +175,17 @@ class BalanceSnapshotViewSet(viewsets.ReadOnlyModelViewSet):
 
 class PositionSnapshotViewSet(viewsets.ReadOnlyModelViewSet):
     """持仓快照 API"""
-    queryset = PositionSnapshot.objects.all()
     serializer_class = PositionSnapshotSerializer
     filterset_fields = ['inst_id', 'pos_side']
+
+    def get_queryset(self):
+        return PositionSnapshot.objects.filter(user=self.request.user)
 
     @action(detail=False, methods=['post'])
     def snapshot(self, request):
         """手动保存持仓快照"""
         inst_type = request.data.get('inst_type', '')
-        snapshots = AccountService.snapshot_positions(inst_type)
+        snapshots = AccountService.snapshot_positions(inst_type, user=request.user)
         serializer = PositionSnapshotSerializer(snapshots, many=True)
         return Response(serializer.data)
 
@@ -193,7 +194,7 @@ class PositionSnapshotViewSet(viewsets.ReadOnlyModelViewSet):
         """获取实时持仓"""
         try:
             inst_type = request.query_params.get('inst_type', '')
-            positions = AccountService.get_positions_from_api(inst_type)
+            positions = AccountService.get_positions_from_api(inst_type, user=request.user)
             return Response({
                 inst_id: {
                     'pos': p.pos, 'avg_px': p.avg_px,
@@ -208,12 +209,14 @@ class PositionSnapshotViewSet(viewsets.ReadOnlyModelViewSet):
 
 class NetValueHistoryViewSet(viewsets.ReadOnlyModelViewSet):
     """净值历史 API"""
-    queryset = NetValueHistory.objects.all()
     serializer_class = NetValueHistorySerializer
+
+    def get_queryset(self):
+        return NetValueHistory.objects.filter(user=self.request.user)
 
     @action(detail=False, methods=['post'])
     def record(self, request):
         """手动记录净值"""
-        record = AccountService.record_net_value()
+        record = AccountService.record_net_value(user=request.user)
         serializer = NetValueHistorySerializer(record)
         return Response(serializer.data)

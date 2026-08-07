@@ -14,8 +14,10 @@ class TradeOrderSerializer(serializers.ModelSerializer):
     side_display = serializers.CharField(source='get_side_display', read_only=True)
     ord_type_display = serializers.CharField(source='get_ord_type_display', read_only=True)
     state_display = serializers.CharField(source='get_state_display', read_only=True)
+    username = serializers.CharField(source='user.username', read_only=True)
     logs = OrderLogSerializer(many=True, read_only=True)
 
     class Meta:
         model = TradeOrder
         fields = '__all__'
+        extra_kwargs = {'user': {'read_only': True}}

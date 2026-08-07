@@ -2,6 +2,7 @@
 订单模型：交易订单记录
 """
 
+from django.conf import settings
 from django.db import models
 
 
@@ -29,6 +30,9 @@ class TradeOrder(models.Model):
         ('failed', '失败'),
     ]
 
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                              related_name='trade_orders', verbose_name='所属用户',
+                              null=True, default=None)
     ord_id = models.CharField('订单ID', max_length=64, blank=True, db_index=True)
     cl_ord_id = models.CharField('客户自定义订单ID', max_length=64, blank=True)
     inst_id = models.CharField('产品ID', max_length=50, db_index=True)

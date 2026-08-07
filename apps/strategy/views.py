@@ -18,12 +18,10 @@ from core.okx_client import get_okx_client
 
 class StrategyConfigViewSet(viewsets.ModelViewSet):
     """策略配置 CRUD API"""
-    queryset = StrategyConfig.objects.all()
     serializer_class = StrategyConfigSerializer
 
     def get_queryset(self):
-        """支持列表筛选：keyword(名称模糊)、strategy_type、inst_type、status、direction"""
-        qs = super().get_queryset()
+        qs = StrategyConfig.objects.filter(user=self.request.user)
         params = self.request.query_params
         keyword = params.get('keyword')
         if keyword:
@@ -34,15 +32,17 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
                 qs = qs.filter(**{field: val})
         return qs
 
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
     @action(detail=False, methods=['get'])
     def instruments(self, request):
         """获取 OKX 交易产品列表（支持下拉选交易对）"""
         inst_type = request.query_params.get('inst_type', 'SWAP')
-        client = get_okx_client()
+        client = get_okx_client(user=request.user)
         try:
             result = client.get_instruments(inst_type=inst_type)
             data = result.get('data', [])
-            # 过滤仅可交易、状态为 live 的产品
             items = [
                 {
                     'instId': item.get('instId'),
@@ -58,7 +58,6 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
             ]
             return Response({'inst_type': inst_type, 'instruments': items})
         except Exception as e:
-            # 兜底：返回常见 U 本位永续合约
             fallback = [
                 'BTC-USDT-SWAP', 'ETH-USDT-SWAP', 'SOL-USDT-SWAP',
                 'XRP-USDT-SWAP', 'DOGE-USDT-SWAP', 'LTC-USDT-SWAP',
@@ -93,7 +92,7 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
     def run_signals(self, request, pk=None):
         """手动运行信号生成"""
         strategy = self.get_object()
-        signals = StrategyService.generate_signals(strategy)
+        signals = StrategyService.generate_signals(strategy, user=request.user)
         serializer = SignalRecordSerializer(signals, many=True)
         return Response(serializer.data)
 
@@ -105,7 +104,7 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
         results = []
         for sig in signals:
             try:
-                r = StrategyService.execute_signal(sig)
+                r = StrategyService.execute_signal(sig, user=request.user)
                 results.append({'id': sig.id, 'success': True, 'result': r})
             except Exception as e:
                 results.append({'id': sig.id, 'success': False, 'error': str(e)})
@@ -120,13 +119,6 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
         from django.utils.dateparse import parse_datetime, parse_date
 
         def _parse_dt(value, is_end=False):
-            """解析前端传入的日期/时间字符串。
-
-            前端日期选择器可能只传 YYYY-MM-DD（纯日期）。若 end_date 缺省时间，
-            应取当天 23:59:59 而非 00:00，否则会把当天所有 K 线数据过滤掉。
-            注意：新版 Django 的 parse_datetime 对纯日期会返回 00:00，因此先以
-            正则识别纯日期，确保 end 能取到当天结束时刻。
-            """
             if not value:
                 return None
             if isinstance(value, datetime):
@@ -154,12 +146,10 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
         end_dt = _parse_dt(end_date, is_end=True)
 
         if not start_dt or not end_dt:
-            # 默认回测最近30天
             now = timezone.now()
             end_dt = now
             start_dt = now - timedelta(days=30)
 
-        # 统一为带时区的时间，避免 naive datetime 警告
         if timezone.is_naive(start_dt):
             start_dt = timezone.make_aware(start_dt)
         if timezone.is_naive(end_dt):
@@ -170,6 +160,7 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
                 strategy,
                 start_date=start_dt,
                 end_date=end_dt,
+                user=request.user,
             )
             serializer = BacktestResultSerializer(result)
             return Response(serializer.data)
@@ -181,8 +172,10 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
 
 class FactorDefinitionViewSet(viewsets.ReadOnlyModelViewSet):
     """因子定义 API"""
-    queryset = FactorDefinition.objects.filter(is_active=True)
     serializer_class = FactorDefinitionSerializer
+
+    def get_queryset(self):
+        return FactorDefinition.objects.filter(is_active=True, user=self.request.user)
 
     @action(detail=False, methods=['post'])
     def calculate(self, request):
@@ -195,9 +188,8 @@ class FactorDefinitionViewSet(viewsets.ReadOnlyModelViewSet):
         if not inst_id:
             return Response({'error': 'inst_id is required'}, status=400)
 
-        # 先拉取最新K线
-        MarketDataService.fetch_klines(inst_id=inst_id, bar=bar, limit=200)
-        df = MarketDataService.get_klines_df(inst_id=inst_id, bar=bar, limit=200)
+        MarketDataService.fetch_klines(inst_id=inst_id, bar=bar, limit=200, user=request.user)
+        df = MarketDataService.get_klines_df(inst_id=inst_id, bar=bar, limit=200, user=request.user)
 
         if df.empty:
             return Response({'error': 'No K-line data'}, status=404)
@@ -224,16 +216,18 @@ class FactorDefinitionViewSet(viewsets.ReadOnlyModelViewSet):
 
 class SignalRecordViewSet(viewsets.ReadOnlyModelViewSet):
     """交易信号 API"""
-    queryset = SignalRecord.objects.all()
     serializer_class = SignalRecordSerializer
     filterset_fields = ['strategy', 'inst_id', 'signal', 'is_executed']
+
+    def get_queryset(self):
+        return SignalRecord.objects.filter(strategy__user=self.request.user)
 
     @action(detail=True, methods=['post'])
     def execute(self, request, pk=None):
         """执行单个信号"""
         signal = self.get_object()
         try:
-            result = StrategyService.execute_signal(signal)
+            result = StrategyService.execute_signal(signal, user=request.user)
             return Response({'success': True, 'result': result})
         except Exception as e:
             return Response({'success': False, 'error': str(e)})
@@ -241,6 +235,8 @@ class SignalRecordViewSet(viewsets.ReadOnlyModelViewSet):
 
 class BacktestResultViewSet(viewsets.ReadOnlyModelViewSet):
     """回测结果 API"""
-    queryset = BacktestResult.objects.all()
     serializer_class = BacktestResultSerializer
     filterset_fields = ['strategy']
+
+    def get_queryset(self):
+        return BacktestResult.objects.filter(strategy__user=self.request.user)

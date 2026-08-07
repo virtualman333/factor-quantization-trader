@@ -7,41 +7,7 @@
 
 > 当前系统为单用户设计（全局 SystemConfig、全局 OKX 客户端单例），
 > 需要改造为多用户架构，每个用户独立管理自己的策略和凭证。
-
-- [ ] **数据模型改造**
-  - [ ] 所有核心表添加 `user` 外键（`ForeignKey(User)`）
-    - [ ] `OKXCredential` — 每个用户独立配置 demo/live 凭证
-    - [ ] `SystemConfig` — 改为按用户存储 `active_environment`
-    - [ ] `StrategyConfig` — 策略归属用户
-    - [ ] `FactorDefinition` — 支持用户自定义因子
-    - [ ] `SignalRecord` — 通过策略级联归属用户
-    - [ ] `BacktestResult` — 回测归属用户
-    - [ ] `TradeOrder` — 订单归属用户
-    - [ ] `KLine` — 行情数据是否共享？（建议共享，节省存储）
-    - [ ] `BalanceSnapshot` / `PositionSnapshot` / `NetValueHistory` — 账户数据归属用户
-    - [ ] `TrackedPosition` — 策略持仓归属用户
-  - [ ] 数据库迁移（添加 user 字段 + 数据迁移填充默认用户）
-
-- [ ] **运行时改造**
-  - [ ] `get_okx_client()` 改为按用户获取客户端（每个用户独立 `flag`）
-  - [ ] `RiskManager` 每日统计缓存 key 加上 `user_id`
-  - [ ] Celery 任务按用户隔离执行
-
-- [ ] **API 层改造**
-  - [ ] 所有 ViewSet 的 `get_queryset()` 按 `request.user` 过滤
-  - [ ] 序列化器 `create()` 自动注入 `request.user`
-  - [ ] 全局权限类：`IsAuthenticated` + 对象级 `IsOwner`
-  - [ ] K 线 `scroll` 接口：共享数据不过滤用户，凭证相关数据按用户过滤
-
-- [ ] **前端改造**
-  - [ ] 登录/注册页面
-  - [ ] 个人中心页面（修改密码、个人信息）
-  - [ ] 用户状态 Store（`useAuthStore`）
-  - [ ] 路由守卫 + Token 管理
-  - [ ] 顶部导航栏显示用户名 + 退出登录
-
 - [ ] **管理员功能**
-  - [ ] Django Admin 用户管理
   - [ ] 系统级配置（全局风控参数、市场数据同步）
   - [ ] 用户使用统计面板
   - [ ] 用户配额管理（API 调用频率、策略数量上限）
@@ -209,7 +175,7 @@
 | 分类 | 总数 | 已完成 | 进度 |
 |------|------|--------|------|
 | P0 安全与认证 | 10 | 0 | 0% |
-| P0 多用户支持 | 28 | 0 | 0% |
+| P0 多用户支持 | 28 | 24 | 86% |
 | P1 实时数据 | 9 | 0 | 0% |
 | P1 运维基础设施 | 10 | 0 | 0% |
 | P1 API 文档 & 可观测性 | 8 | 0 | 0% |

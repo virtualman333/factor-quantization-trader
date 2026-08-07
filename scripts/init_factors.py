@@ -11,7 +11,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 django.setup()
 
+from django.contrib.auth.models import User
 from apps.strategy.models import FactorDefinition
+
+# 默认用户（用于系统级因子）
+DEFAULT_USER_ID = 1
 
 FACTORS = [
     {
@@ -93,8 +97,10 @@ FACTORS = [
     },
 ]
 
+default_user = User.objects.get(id=DEFAULT_USER_ID)
 for factor_data in FACTORS:
     obj, created = FactorDefinition.objects.update_or_create(
+        user=default_user,
         name=factor_data['name'],
         defaults=factor_data,
     )

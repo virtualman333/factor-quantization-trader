@@ -51,8 +51,9 @@ class PositionInfo:
 class RiskManager:
     """统一风控管理器"""
 
-    def __init__(self, limits: RiskLimits = None):
+    def __init__(self, limits: RiskLimits = None, user_id: int = 0):
         self.limits = limits or self._load_limits()
+        self._user_id = user_id
         self._last_order_time: Dict[str, float] = {}
         self._daily_trades: int = 0
         self._daily_pnl: float = 0.0
@@ -60,6 +61,10 @@ class RiskManager:
 
         # 从缓存恢复今日交易统计
         self._load_daily_stats()
+
+    @property
+    def _cache_key(self):
+        return f'risk:daily_stats:{self._user_id}'
 
     @staticmethod
     def _load_limits() -> RiskLimits:
@@ -85,7 +90,7 @@ class RiskManager:
 
     def _load_daily_stats(self):
         """从缓存加载每日统计"""
-        stats = cache.get('risk:daily_stats')
+        stats = cache.get(self._cache_key)
         if stats and stats.get('date') == str(timezone.now().date()):
             self._daily_trades = stats.get('trades', 0)
             self._daily_pnl = stats.get('pnl', 0.0)
@@ -93,7 +98,7 @@ class RiskManager:
 
     def _save_daily_stats(self):
         """保存每日统计到缓存"""
-        cache.set('risk:daily_stats', {
+        cache.set(self._cache_key, {
             'date': str(self._daily_reset_date),
             'trades': self._daily_trades,
             'pnl': self._daily_pnl,

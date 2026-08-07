@@ -27,12 +27,13 @@ class OrderService:
                      px: str = '', td_mode: str = 'cash',
                      pos_side: str = '', leverage: float = 1,
                      source: str = 'manual',
-                     strategy_id: int = None, signal_id: int = None) -> Dict:
+                     strategy_id: int = None, signal_id: int = None,
+                     user=None) -> Dict:
         """创建并提交订单（支持合约杠杆）"""
-        # 风控检查
-        risk_mgr = RiskManager()
+        user_id = user.id if user and user.is_authenticated else 0
+        risk_mgr = RiskManager(user_id=user_id)
         order_value = float(sz) * (float(px) if px else 0)
-        client = get_okx_client()
+        client = get_okx_client(user=user)
 
         if ord_type == 'market' and not px:
             ticker = client.get_ticker(inst_id)
@@ -62,6 +63,7 @@ class OrderService:
 
         # 创建本地订单记录
         trade_order = TradeOrder.objects.create(
+            user=user if user and user.is_authenticated else None,
             cl_ord_id=cl_ord_id,
             inst_id=inst_id,
             td_mode=td_mode,
@@ -108,9 +110,9 @@ class OrderService:
         }
 
     @staticmethod
-    def cancel_order(ord_id: str, inst_id: str = '') -> Dict:
+    def cancel_order(ord_id: str, inst_id: str = '', user=None) -> Dict:
         """撤销订单"""
-        client = get_okx_client()
+        client = get_okx_client(user=user)
 
         # 查找本地订单
         trade_order = TradeOrder.objects.filter(
@@ -136,14 +138,14 @@ class OrderService:
         return {'ord_id': ord_id, 'state': trade_order.state, 'result': result}
 
     @staticmethod
-    def sync_order_status(ord_id: str) -> Optional[TradeOrder]:
+    def sync_order_status(ord_id: str, user=None) -> Optional[TradeOrder]:
         """同步单个订单状态"""
         trade_order = TradeOrder.objects.filter(ord_id=ord_id).first()
         if not trade_order:
             logger.warning(f'未找到本地订单: {ord_id}')
             return None
 
-        client = get_okx_client()
+        client = get_okx_client(user=user)
         result = client.get_order(
             inst_id=trade_order.inst_id, ord_id=ord_id
         )
@@ -187,7 +189,7 @@ class OrderService:
         return trade_order
 
     @staticmethod
-    def sync_pending_orders() -> int:
+    def sync_pending_orders(user=None) -> int:
         """同步所有待处理订单状态"""
         pending = TradeOrder.objects.filter(
             state__in=['live', 'partially_filled']
@@ -195,7 +197,7 @@ class OrderService:
         count = 0
         for order in pending:
             try:
-                OrderService.sync_order_status(order.ord_id)
+                OrderService.sync_order_status(order.ord_id, user=user)
                 count += 1
             except Exception as e:
                 logger.error(f'同步订单 {order.ord_id} 失败: {e}')
@@ -203,12 +205,12 @@ class OrderService:
 
     @staticmethod
     def place_market_close(inst_id: str, sz: str, side: str = '',
-                           td_mode: str = 'cash', source: str = 'strategy') -> Dict:
+                           td_mode: str = 'cash', source: str = 'strategy',
+                           user=None) -> Dict:
         """市价平仓"""
         if not side:
-            # 根据持仓方向决定
             from apps.account.services import AccountService
-            positions = AccountService.get_positions_from_api()
+            positions = AccountService.get_positions_from_api(user=user)
             pos = positions.get(inst_id)
             if pos:
                 side = 'sell' if pos.pos > 0 else 'buy'
@@ -222,4 +224,5 @@ class OrderService:
             sz=sz,
             td_mode=td_mode,
             source=source,
+            user=user,
         )

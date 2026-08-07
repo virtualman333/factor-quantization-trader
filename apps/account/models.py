@@ -2,6 +2,7 @@
 账户模型：余额快照、持仓快照、净值历史、OKX凭证
 """
 
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -9,6 +10,9 @@ from django.utils import timezone
 class BalanceSnapshot(models.Model):
     """账户余额快照"""
 
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                              related_name='balance_snapshots', verbose_name='所属用户',
+                              null=True, default=None)
     ccy = models.CharField('币种', max_length=20)
     total_eq = models.DecimalField('总权益', max_digits=24, decimal_places=8)
     avail_eq = models.DecimalField('可用余额', max_digits=24, decimal_places=8)
@@ -35,6 +39,9 @@ class PositionSnapshot(models.Model):
         ('short', '空头'),
     ]
 
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                              related_name='position_snapshots', verbose_name='所属用户',
+                              null=True, default=None)
     inst_id = models.CharField('产品ID', max_length=50)
     inst_type = models.CharField('产品类型', max_length=20)
     pos_side = models.CharField('持仓方向', max_length=10, choices=POS_SIDE_CHOICES)
@@ -61,6 +68,9 @@ class PositionSnapshot(models.Model):
 class NetValueHistory(models.Model):
     """净值历史"""
 
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                              related_name='net_value_history', verbose_name='所属用户',
+                              null=True, default=None)
     total_eq = models.DecimalField('总权益', max_digits=24, decimal_places=8)
     total_pnl = models.DecimalField('总盈亏', max_digits=24, decimal_places=8, default=0)
     daily_pnl = models.DecimalField('日盈亏', max_digits=24, decimal_places=8, default=0)
@@ -78,7 +88,7 @@ class NetValueHistory(models.Model):
 
 
 class OKXCredential(models.Model):
-    """OKX API 凭证（按环境分别存储：demo / live）"""
+    """OKX API 凭证（按用户+环境分别存储：demo / live）"""
 
     FLAG_CHOICES = [
         ('0', '实盘 (Live)'),
@@ -90,7 +100,10 @@ class OKXCredential(models.Model):
         ('live', '实盘'),
     ]
 
-    name = models.CharField('环境', max_length=20, choices=ENV_CHOICES, default='demo', unique=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                              related_name='okx_credentials', verbose_name='所属用户',
+                              null=True, default=None)
+    name = models.CharField('环境', max_length=20, choices=ENV_CHOICES, default='demo')
     api_key = models.CharField('API Key', max_length=200)
     api_secret = models.CharField('Secret Key', max_length=200)
     passphrase = models.CharField('Passphrase', max_length=200)
@@ -103,19 +116,23 @@ class OKXCredential(models.Model):
         db_table = 'account_okx_credential'
         verbose_name = 'OKX凭证'
         verbose_name_plural = verbose_name
+        unique_together = [('user', 'name')]
 
     def __str__(self):
-        return f'{self.get_name_display()} ({self.get_flag_display()})'
+        return f'[{self.user}] {self.get_name_display()} ({self.get_flag_display()})'
 
 
 class SystemConfig(models.Model):
-    """系统全局配置（单例）"""
+    """系统全局配置（按用户隔离，每个用户独立环境选择）"""
 
     ENV_CHOICES = [
         ('demo', '模拟盘'),
         ('live', '实盘'),
     ]
 
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                                 related_name='system_config', verbose_name='所属用户',
+                                 null=True, default=None)
     active_environment = models.CharField('当前交易环境', max_length=10, choices=ENV_CHOICES, default='demo')
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -124,16 +141,12 @@ class SystemConfig(models.Model):
         verbose_name = '系统配置'
         verbose_name_plural = verbose_name
 
-    def save(self, *args, **kwargs):
-        self.pk = 1
-        super().save(*args, **kwargs)
-
-    def delete(self, *args, **kwargs):
-        pass
-
     @classmethod
-    def get_config(cls):
-        config, _ = cls.objects.get_or_create(pk=1)
+    def get_config(cls, user=None):
+        if user and user.is_authenticated:
+            config, _ = cls.objects.get_or_create(user=user, defaults={'active_environment': 'demo'})
+        else:
+            config, _ = cls.objects.get_or_create(user_id=1, defaults={'active_environment': 'demo'})
         return config
 
 

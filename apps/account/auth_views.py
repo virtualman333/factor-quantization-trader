@@ -137,9 +137,11 @@ class MeView(APIView):
 
 
 class RegisterView(APIView):
-    """管理员创建新用户，仅超级用户/管理员可访问。"""
+    """用户注册（公开接口，允许任何人注册）。"""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    throttle_classes = [LoginRateThrottle]
 
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
@@ -158,12 +160,10 @@ class RegisterView(APIView):
             username=username,
             password=serializer.validated_data['password'],
         )
-        user.is_staff = serializer.validated_data.get('is_staff', False)
-        user.save()
         return Response(
             {
                 'code': status.HTTP_201_CREATED,
-                'message': '用户创建成功',
+                'message': '注册成功',
                 'data': {
                     'id': user.id,
                     'username': user.username,
@@ -171,4 +171,36 @@ class RegisterView(APIView):
                 },
             },
             status=status.HTTP_201_CREATED,
+        )
+
+
+class ChangePasswordView(APIView):
+    """修改密码。"""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        old_password = request.data.get('old_password')
+        new_password = request.data.get('new_password')
+        if not old_password or not new_password:
+            return Response(
+                {'code': 400, 'message': '请提供旧密码和新密码', 'data': None},
+                status=400,
+            )
+        if len(new_password) < 6:
+            return Response(
+                {'code': 400, 'message': '新密码长度至少6位', 'data': None},
+                status=400,
+            )
+        user = request.user
+        if not user.check_password(old_password):
+            return Response(
+                {'code': 400, 'message': '旧密码错误', 'data': None},
+                status=400,
+            )
+        user.set_password(new_password)
+        user.save()
+        return Response(
+            {'code': 200, 'message': '密码修改成功', 'data': None},
+            status=200,
         )

@@ -2,8 +2,8 @@
 策略模型：策略配置、因子定义、信号记录、回测结果
 """
 
+from django.conf import settings
 from django.db import models
-
 
 
 class StrategyConfig(models.Model):
@@ -34,7 +34,10 @@ class StrategyConfig(models.Model):
         ('volume_breakout', '放量跟随'),
     ]
 
-    name = models.CharField('策略名称', max_length=100, unique=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                              related_name='strategies', verbose_name='所属用户',
+                              null=True, default=None)
+    name = models.CharField('策略名称', max_length=100)
     description = models.TextField('策略描述', blank=True)
     strategy_type = models.CharField('策略类型', max_length=30, choices=STRATEGY_TYPE_CHOICES, default='factor_composite')
     inst_type = models.CharField('产品类型', max_length=20, default='SWAP')
@@ -73,10 +76,10 @@ class StrategyConfig(models.Model):
         db_table = 'strategy_config'
         verbose_name = '策略配置'
         verbose_name_plural = verbose_name
+        unique_together = [('user', 'name')]
 
     def __str__(self):
         return f'{self.name} ({self.get_status_display()})'
-
 
 
 class FactorDefinition(models.Model):
@@ -90,7 +93,10 @@ class FactorDefinition(models.Model):
         ('composite', '复合类'),
     ]
 
-    name = models.CharField('因子名称', max_length=50, unique=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                              related_name='factor_definitions', verbose_name='所属用户',
+                              null=True, default=None)
+    name = models.CharField('因子名称', max_length=50)
     display_name = models.CharField('显示名称', max_length=100)
     factor_type = models.CharField('因子类型', max_length=20, choices=FACTOR_TYPE_CHOICES)
     description = models.TextField('因子描述', blank=True)
@@ -102,6 +108,7 @@ class FactorDefinition(models.Model):
         db_table = 'strategy_factor_definition'
         verbose_name = '因子定义'
         verbose_name_plural = verbose_name
+        unique_together = [('user', 'name')]
 
     def __str__(self):
         return f'{self.display_name} ({self.get_factor_type_display()})'
