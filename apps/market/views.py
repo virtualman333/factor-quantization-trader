@@ -1,9 +1,13 @@
 """行情数据 API 视图"""
 
+from datetime import datetime
+
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
+
+from django.utils import timezone
 
 
 class KLinePagination(PageNumberPagination):
@@ -18,6 +22,7 @@ from apps.market.serializers import (
     TickerSerializer, FundingRateSerializer,
 )
 from apps.market.services import MarketDataService
+from apps.account.models import SystemConfig
 
 
 class InstrumentViewSet(viewsets.ReadOnlyModelViewSet):
@@ -35,28 +40,136 @@ class InstrumentViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class KLineViewSet(viewsets.ReadOnlyModelViewSet):
-    """K线数据 API"""
-    queryset = KLine.objects.all()
+    """K线数据 API（自动按当前交易环境过滤）"""
+
+    queryset = KLine.objects.none()
     serializer_class = KLineSerializer
-    filterset_fields = ['instrument__inst_id', 'bar']
+    filterset_fields = ['instrument__inst_id', 'bar', 'environment']
     pagination_class = KLinePagination
+
+    def get_queryset(self):
+        """自动过滤当前激活的交易环境"""
+        try:
+            env = SystemConfig.get_config().active_environment
+        except Exception:
+            env = 'demo'
+        return KLine.objects.filter(environment=env)
 
     @action(detail=False, methods=['post'])
     def fetch(self, request):
-        """手动拉取K线"""
+        """手动拉取K线（支持翻页拉取更多历史数据）"""
         inst_id = request.data.get('inst_id')
         bar = request.data.get('bar', '1H')
-        limit = request.data.get('limit', 100)
+        limit = request.data.get('limit', 300)
         is_history = request.data.get('is_history', True)
 
         if not inst_id:
             return Response({'error': 'inst_id is required'}, status=400)
 
-        klines = MarketDataService.fetch_klines(
-            inst_id=inst_id, bar=bar, limit=limit, is_history=is_history
+        count = MarketDataService.fetch_klines_history(
+            inst_id=inst_id, bar=bar, total=int(limit)
         )
+        env = MarketDataService._get_current_env()
+        return Response({'count': count, 'inst_id': inst_id, 'bar': bar, 'environment': env})
+
+    @action(detail=False, methods=['get'])
+    def scroll(self, request):
+        """按时间游标加载K线，支持左右滑动翻页。
+        自动通过 SystemConfig 获取当前交易环境过滤数据。
+        参数:
+          - inst_id: 品种ID (必填)
+          - bar: K线周期 (必填)
+          - before: 加载此时间戳之前的数据（向左滑动加载更旧数据）
+          - after: 加载此时间戳之后的数据（向右滑动加载更新数据）
+          - limit: 每次加载数量，默认500，最大1000
+          - auto_fetch: 当数据库无数据时是否自动从OKX拉取，默认true
+        返回:
+          - results: K线数据列表
+          - has_more: 是否还有更多数据
+          - environment: 当前交易环境
+        """
+        inst_id = request.query_params.get('inst_id', '')
+        bar = request.query_params.get('bar', '1H')
+        before = request.query_params.get('before', '')
+        after = request.query_params.get('after', '')
+        limit = min(int(request.query_params.get('limit', 500)), 1000)
+        auto_fetch = request.query_params.get('auto_fetch', 'true').lower() == 'true'
+
+        if not inst_id:
+            return Response({'error': 'inst_id is required'}, status=400)
+
+        try:
+            env = SystemConfig.get_config().active_environment
+        except Exception:
+            env = 'demo'
+
+        qs = KLine.objects.filter(environment=env, instrument__inst_id=inst_id, bar=bar)
+
+        if after:
+            try:
+                after_ts = datetime.fromtimestamp(int(after) / 1000, tz=timezone.get_current_timezone())
+            except (ValueError, OSError):
+                return Response({'error': 'invalid after timestamp'}, status=400)
+            qs = qs.filter(timestamp__gt=after_ts).order_by('timestamp')
+        elif before:
+            try:
+                before_ts = datetime.fromtimestamp(int(before) / 1000, tz=timezone.get_current_timezone())
+            except (ValueError, OSError):
+                return Response({'error': 'invalid before timestamp'}, status=400)
+            qs = qs.filter(timestamp__lt=before_ts).order_by('-timestamp')
+        else:
+            qs = qs.order_by('-timestamp')
+
+        if before:
+            klines = list(qs[:limit])
+            klines.reverse()
+        else:
+            klines = list(qs[:limit])
+            klines = sorted(klines, key=lambda k: k.timestamp)
+
+        has_more = False
+        if before and klines:
+            earliest = klines[0]
+            has_more = KLine.objects.filter(
+                environment=env, instrument__inst_id=inst_id, bar=bar,
+                timestamp__lt=earliest.timestamp
+            ).exists()
+
+        if auto_fetch and len(klines) < limit:
+            if before and klines:
+                oldest_ts = str(int(klines[0].timestamp.timestamp() * 1000))
+                MarketDataService.fetch_klines_history(
+                    inst_id=inst_id, bar=bar, total=limit, before=oldest_ts
+                )
+                return self.scroll(request)
+            elif after or not before:
+                try:
+                    MarketDataService.fetch_klines(
+                        inst_id=inst_id, bar=bar, limit=limit, is_history=True
+                    )
+                    return self.scroll(request)
+                except Exception:
+                    pass
+
+        if after and klines:
+            latest = klines[-1]
+            has_more = KLine.objects.filter(
+                environment=env, instrument__inst_id=inst_id, bar=bar,
+                timestamp__gt=latest.timestamp
+            ).exists()
+        elif not before and not after and klines:
+            latest = klines[-1]
+            has_more = KLine.objects.filter(
+                environment=env, instrument__inst_id=inst_id, bar=bar,
+                timestamp__gt=latest.timestamp
+            ).exists()
+
         serializer = KLineSerializer(klines, many=True)
-        return Response(serializer.data)
+        return Response({
+            'results': serializer.data,
+            'has_more': has_more,
+            'environment': env,
+        })
 
 
 class TickerViewSet(viewsets.ReadOnlyModelViewSet):

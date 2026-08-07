@@ -743,10 +743,14 @@ class StrategyService:
                      start_date: datetime, end_date: datetime) -> BacktestResult:
         """简单回测引擎（基于历史K线）"""
         from apps.market.models import KLine
+        from apps.account.models import SystemConfig
         import numpy as np
 
-        # 获取所有标的的历史K线
+        env = SystemConfig.get_config().active_environment
+
+        # 获取所有标的的历史K线（按当前环境过滤）
         all_klines = KLine.objects.filter(
+            environment=env,
             instrument__inst_id__in=strategy.symbols,
             bar=strategy.bar,
             timestamp__gte=start_date,

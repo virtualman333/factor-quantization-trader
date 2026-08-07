@@ -2,24 +2,30 @@
   <div class="kline-page">
     <!-- 顶部工具栏 -->
     <div class="page-header">
-      <h2>K线数据</h2>
+      <h2>
+        K线数据
+        <el-tag v-if="envLabel" :type="envType" size="small" effect="dark" style="margin-left:8px;vertical-align:middle">
+          {{ envLabel }}
+        </el-tag>
+      </h2>
       <div class="header-right">
         <el-input v-model="instId" placeholder="品种 (BTC-USDT)" style="width:180px" clearable />
         <el-select v-model="bar" style="width:90px;margin-left:8px">
           <el-option v-for="b in bars" :key="b" :label="b" :value="b" />
         </el-select>
         <el-button-group style="margin-left:8px">
-          <el-button :type="timeRange === 'page1' ? 'primary' : ''" size="small" @click="switchRange('page1')">近300条</el-button>
-          <el-button :type="timeRange === 'full' ? 'primary' : ''" size="small" @click="switchRange('full')">全部</el-button>
+          <el-button :type="preloadSize === 500 ? 'primary' : ''" size="small" @click="switchPreload(500)">500条</el-button>
+          <el-button :type="preloadSize === 1000 ? 'primary' : ''" size="small" @click="switchPreload(1000)">1000条</el-button>
+          <el-button :type="preloadSize === 3000 ? 'primary' : ''" size="small" @click="switchPreload(3000)">3000条</el-button>
         </el-button-group>
-        <el-button type="primary" :icon="Download" @click="fetchKlines" style="margin-left:8px">拉取</el-button>
-        <el-button :icon="Refresh" @click="load" style="margin-left:8px">刷新</el-button>
+        <el-button type="primary" :icon="Download" @click="fetchHistory" :loading="fetchLoading" style="margin-left:8px">拉取</el-button>
+        <el-button :icon="Refresh" @click="reload" :loading="loading" style="margin-left:8px">刷新</el-button>
       </div>
     </div>
 
     <!-- 图表区域 -->
     <el-card style="margin-top:12px">
-      <!-- 加载/状态栏 -->
+      <!-- 数据摘要栏 -->
       <div v-if="dataSummary" class="chart-toolbar">
         <div class="data-summary">
           <span class="summary-item">
@@ -53,53 +59,70 @@
             <span class="value">{{ dataSummary.count }}条</span>
           </span>
         </div>
+        <div class="chart-hint">
+          <el-icon><Mouse /></el-icon>
+          <span>滚轮缩放 | 拖拽滑动查看更多</span>
+        </div>
       </div>
-      <div v-loading="loading" class="chart-container">
+      <div class="chart-container">
         <div ref="chartRef" class="chart-box"></div>
+        <!-- 加载状态 -->
+        <div v-if="loading && !dataSummary" class="chart-loading-mask">
+          <el-icon class="is-loading" :size="32"><Loading /></el-icon>
+          <span>加载K线数据...</span>
+        </div>
       </div>
     </el-card>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
-import { getKlines, fetchKlines as fetchApi } from '@/api/market'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { scrollKlines, fetchKlines as fetchApi } from '@/api/market'
+import { useConnectionStore } from '@/stores/connection'
 import { ElMessage } from 'element-plus'
-import { Download, Refresh } from '@element-plus/icons-vue'
+import { Download, Refresh, Mouse, Loading } from '@element-plus/icons-vue'
 import { init, dispose } from 'klinecharts'
+
+const connectionStore = useConnectionStore()
+const envLabel = computed(() => connectionStore.envLabel)
+const envType = computed(() => (connectionStore.environment === 'live' ? 'danger' : 'primary'))
 
 const chartRef = ref(null)
 const loading = ref(false)
+const fetchLoading = ref(false)
 const instId = ref('BTC-USDT')
 const bar = ref('1H')
-const timeRange = ref('page1') // page1 | full
+const preloadSize = ref(1000)
 const bars = ['1m', '3m', '5m', '15m', '30m', '1H', '2H', '4H', '6H', '12H', '1D', '1W', '1M']
 
 let chart = null
 let resizeObserver = null
-let isFirstLoad = true
 
 const dataSummary = ref(null)
 
-// ---------- 计算 OHLC 摘要 ----------
-const computeSummary = (list) => {
-  if (!list || list.length === 0) return null
+// ---------- 数据摘要 ----------
+const updateSummary = () => {
+  if (!chart) return
+  const list = chart.getDataList()
+  if (!list || list.length === 0) {
+    dataSummary.value = null
+    return
+  }
   const first = list[0]
   const last = list[list.length - 1]
-  const opens = list.map(d => parseFloat(d.open))
-  const highs = list.map(d => parseFloat(d.high))
-  const lows = list.map(d => parseFloat(d.low))
-  const closes = list.map(d => parseFloat(d.close))
+  const highs = list.map(d => d.high)
+  const lows = list.map(d => d.low)
 
-  const open = parseFloat(first.open)
+  const open = first.open
   const high = Math.max(...highs)
   const low = Math.min(...lows)
-  const close = parseFloat(last.close)
+  const close = last.close
   const change = close - open
   const changePercent = open !== 0 ? ((change / open) * 100).toFixed(2) : '0.00'
   const amplitude = low !== 0 ? (((high - low) / low) * 100).toFixed(2) : '0.00'
 
-  return {
+  dataSummary.value = {
     open: open.toFixed(2),
     high: high.toFixed(2),
     low: low.toFixed(2),
@@ -111,7 +134,21 @@ const computeSummary = (list) => {
   }
 }
 
-// ---------- 图表初始化 ----------
+// ---------- 将后端数据转为 klinecharts 格式 ----------
+const toChartData = (items) => {
+  return items
+    .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+    .map(d => ({
+      timestamp: new Date(d.timestamp).getTime(),
+      open: parseFloat(d.open),
+      high: parseFloat(d.high),
+      low: parseFloat(d.low),
+      close: parseFloat(d.close),
+      volume: parseFloat(d.vol) || 0,
+    }))
+}
+
+// ---------- 初始化图表 ----------
 const initChart = () => {
   if (!chartRef.value) return
 
@@ -123,50 +160,31 @@ const initChart = () => {
       grid: {
         show: true,
         horizontal: {
-          show: true,
-          style: 'dashed',
-          size: 1,
-          color: '#e8e8e8',
-          dashedValue: [4, 4],
+          show: true, style: 'dashed', size: 1, color: '#e8e8e8', dashedValue: [4, 4],
         },
         vertical: {
-          show: true,
-          style: 'dashed',
-          size: 1,
-          color: '#e8e8e8',
-          dashedValue: [4, 4],
+          show: true, style: 'dashed', size: 1, color: '#e8e8e8', dashedValue: [4, 4],
         },
       },
       candle: {
         type: 'candle_solid',
         bar: {
-          upColor: '#26a69a',
-          downColor: '#ef5350',
-          noChangeColor: '#888888',
-          upBorderColor: '#26a69a',
-          downBorderColor: '#ef5350',
-          noChangeBorderColor: '#888888',
-          upWickColor: '#26a69a',
-          downWickColor: '#ef5350',
-          noChangeWickColor: '#888888',
+          upColor: '#26a69a', downColor: '#ef5350', noChangeColor: '#888888',
+          upBorderColor: '#26a69a', downBorderColor: '#ef5350', noChangeBorderColor: '#888888',
+          upWickColor: '#26a69a', downWickColor: '#ef5350', noChangeWickColor: '#888888',
         },
         priceMark: {
           show: true,
           high: { show: true, color: '#ef5350', textOffset: 4, textSize: 12, textFamily: 'Arial', textWeight: 'normal' },
           low: { show: true, color: '#26a69a', textOffset: 4, textSize: 12, textFamily: 'Arial', textWeight: 'normal' },
           last: {
-            show: true,
-            upColor: '#26a69a',
-            downColor: '#ef5350',
-            noChangeColor: '#888888',
+            show: true, upColor: '#26a69a', downColor: '#ef5350', noChangeColor: '#888888',
             line: { show: true, size: 1, style: 'dashed', dashedValue: [6, 4] },
             text: { show: true, color: '#ffffff', size: 12, family: 'Arial', weight: 'bold', paddingLeft: 6, paddingTop: 2, paddingRight: 6, paddingBottom: 2, borderRadius: 4 },
           },
         },
         tooltip: {
-          showRule: 'always',
-          showType: 'standard',
-          defaultValue: 'N/A',
+          showRule: 'always', showType: 'standard', defaultValue: 'N/A',
           text: { color: '#333333', size: 12, family: 'Arial', weight: 'normal', marginLeft: 8, marginTop: 4, marginRight: 8, marginBottom: 4 },
         },
       },
@@ -189,9 +207,7 @@ const initChart = () => {
           text: { show: true, color: '#ffffff', size: 11, family: 'Arial', weight: 'normal', paddingLeft: 4, paddingTop: 1, paddingRight: 4, paddingBottom: 1, borderRadius: 3 },
         },
         tooltip: {
-          showRule: 'always',
-          showName: true,
-          showParams: true,
+          showRule: 'always', showName: true, showParams: true,
           text: { color: '#333333', size: 11, family: 'Arial', weight: 'normal', marginLeft: 6, marginTop: 2, marginRight: 6, marginBottom: 2 },
         },
       },
@@ -202,21 +218,12 @@ const initChart = () => {
         tickText: { show: true, color: '#666666', size: 11, family: 'Arial', weight: 'normal', marginStart: 4, marginEnd: 4 },
       },
       yAxis: {
-        show: true,
-        type: 'normal',
-        position: 'right',
-        inside: false,
-        reverse: false,
+        show: true, type: 'normal', position: 'right', inside: false, reverse: false,
         axisLine: { show: true, size: 1, color: '#cccccc' },
         tickLine: { show: true, size: 1, color: '#cccccc', length: 4 },
         tickText: { show: true, color: '#666666', size: 11, family: 'Arial', weight: 'normal', marginStart: 4, marginEnd: 4 },
       },
-      separator: {
-        size: 1,
-        color: '#d0d0d0',
-        fill: false,
-        activeBackgroundColor: 'rgba(230, 230, 230, 0.3)',
-      },
+      separator: { size: 1, color: '#d0d0d0', fill: false, activeBackgroundColor: 'rgba(230, 230, 230, 0.3)' },
       crosshair: {
         show: true,
         horizontal: {
@@ -231,16 +238,7 @@ const initChart = () => {
         },
       },
       overlay: {
-        point: {
-          color: '#ffffff',
-          borderColor: '#2196f3',
-          borderSize: 2,
-          radius: 4,
-          activeColor: '#2196f3',
-          activeBorderColor: '#2196f3',
-          activeBorderSize: 2,
-          activeRadius: 6,
-        },
+        point: { color: '#ffffff', borderColor: '#2196f3', borderSize: 2, radius: 4, activeColor: '#2196f3', activeBorderColor: '#2196f3', activeBorderSize: 2, activeRadius: 6 },
         line: { smooth: false, size: 2, color: '#2196f3', style: 'solid', dashedValue: [] },
         rect: { style: 'stroke_fill', color: '#2196f315', borderColor: '#2196f3', borderSize: 1, borderStyle: 'solid', borderDashedValue: [], borderRadius: 0 },
         polygon: { style: 'stroke_fill', color: '#2196f315', borderColor: '#2196f3', borderSize: 1, borderStyle: 'solid', borderDashedValue: [] },
@@ -252,104 +250,113 @@ const initChart = () => {
   })
 
   if (chart) {
-    // 第一行：在 K 线主图上叠加 MA5/MA10/MA20/MA60 均线
+    // MA 均线叠在主图上
     chart.createIndicator(
       { name: 'MA', calcParams: [5, 10, 20, 60], shortName: 'MA' },
       true,
       { id: 'candle_pane' }
     )
-    // 成交量：klinecharts 默认已带成交量副图，无需额外创建
-    // 第二行：MACD
+    // MACD 副图
     chart.createIndicator('MACD', false, { height: 180, minHeight: 60 })
-    // 第三行：RSI
+    // RSI 副图
     chart.createIndicator('RSI', false, { height: 160, minHeight: 50 })
+
+    // 设置滑动加载回调
+    chart.setLoadDataCallback(loadDataCallback)
   }
 }
 
-// ---------- 渲染图表 ----------
-const renderChart = (list) => {
-  if (!chart) return
-
-  if (!list || list.length === 0) {
-    chart.clearData()
-    dataSummary.value = null
-    ElMessage.warning('暂无 K 线数据，请先拉取数据')
-    return
+// ---------- 滑动加载回调：核心逻辑 ----------
+const loadDataCallback = async (params) => {
+  const { type, data, callback } = params
+  const scrollParams = {
+    inst_id: instId.value,
+    bar: bar.value,
+    limit: 500,
+    auto_fetch: 'true',
   }
 
-  const data = [...list]
-    .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
-    .map(d => ({
-      timestamp: new Date(d.timestamp).getTime(),
-      open: parseFloat(d.open),
-      high: parseFloat(d.high),
-      low: parseFloat(d.low),
-      close: parseFloat(d.close),
-      volume: parseFloat(d.vol) || 0,
-    }))
-
-  chart.applyNewData(data, false)
-  dataSummary.value = computeSummary(list)
-}
-
-// ---------- 加载数据 ----------
-const load = async () => {
-  loading.value = true
   try {
-    const params = { page_size: 1000 }
-    if (instId.value) params.instrument__inst_id = instId.value
-    if (bar.value) params.bar = bar.value
-
-    // 先获取第一页判断数据量
-    const page1Res = await getKlines({ ...params, page: 1 })
-    const page1List = page1Res.results || page1Res
-    const total = page1Res.count || page1List.length
-
-    let allData = page1List
-
-    // 如果需要全部数据且总量超过一页
-    if (timeRange.value === 'full' && total > page1List.length) {
-      const totalPages = Math.ceil(total / 1000)
-      const remainingRequests = []
-      for (let page = 2; page <= totalPages; page++) {
-        remainingRequests.push(getKlines({ ...params, page }))
+    if (type === 'forward') {
+      // 向左滑：加载更旧的数据
+      scrollParams.before = String(data.timestamp)
+      const res = await scrollKlines(scrollParams)
+      const items = res.data?.results || []
+      if (items.length > 0) {
+        callback(toChartData(items), res.data?.has_more ?? false)
+      } else {
+        callback([], false)
       }
-      const remainingResults = await Promise.all(remainingRequests)
-      remainingResults.forEach(res => {
-        allData = allData.concat(res.results || res)
-      })
+    } else if (type === 'backward') {
+      // 向右滑：加载更新的数据
+      scrollParams.after = String(data.timestamp)
+      const res = await scrollKlines(scrollParams)
+      const items = res.data?.results || []
+      if (items.length > 0) {
+        callback(toChartData(items), res.data?.has_more ?? false)
+      } else {
+        callback([], false)
+      }
+    } else {
+      // 初始加载
+      scrollParams.limit = preloadSize.value
+      const res = await scrollKlines(scrollParams)
+      const items = res.data?.results || []
+      if (items.length > 0) {
+        callback(toChartData(items), res.data?.has_more ?? false)
+      } else {
+        // 无数据也可能需要从OKX拉取
+        callback([], false)
+      }
     }
 
-    renderChart(allData)
-
-    if (!isFirstLoad) {
-      ElMessage.success(`已加载 ${allData.length} 条 K 线数据`)
-    }
-    isFirstLoad = false
+    // 更新摘要
+    await nextTick()
+    updateSummary()
   } catch (e) {
     ElMessage.error(`加载失败: ${e.message}`)
+    callback([], false)
   }
-  loading.value = false
 }
 
-// ---------- 切换数据范围 ----------
-const switchRange = (range) => {
-  timeRange.value = range
-  load()
+// ---------- 重建图表（品种/周期切换时） ----------
+const recreateChart = () => {
+  if (chart) {
+    dispose(chart)
+    chart = null
+  }
+  dataSummary.value = null
+  initChart()
 }
 
-// ---------- 手动拉取 ----------
-const fetchKlines = async () => {
+// ---------- 切换预加载数量 ----------
+const switchPreload = (size) => {
+  preloadSize.value = size
+  recreateChart()
+}
+
+// ---------- 手动拉取更多历史数据 ----------
+const fetchHistory = async () => {
   if (!instId.value) { ElMessage.warning('请输入品种ID'); return }
-  loading.value = true
+  fetchLoading.value = true
   try {
-    await fetchApi({ inst_id: instId.value, bar: bar.value, limit: 300, is_history: true })
-    ElMessage.success('拉取成功，正在刷新数据...')
-    await load()
+    const res = await fetchApi({
+      inst_id: instId.value,
+      bar: bar.value,
+      limit: 1000,
+      is_history: true,
+    })
+    ElMessage.success(`已从 OKX 拉取 ${res.data?.count || ''} 条数据并存入数据库`)
+    recreateChart()
   } catch (e) {
     ElMessage.error(`拉取失败: ${e.message}`)
-    loading.value = false
   }
+  fetchLoading.value = false
+}
+
+// ---------- 刷新（重建图表） ----------
+const reload = () => {
+  recreateChart()
 }
 
 // ---------- ResizeObserver ----------
@@ -363,10 +370,9 @@ const setupResizeObserver = () => {
   resizeObserver.observe(chartRef.value)
 }
 
-// ---------- 品种/周期切换时重新加载 ----------
-watch([instId, bar], () => {
-  isFirstLoad = true
-  load()
+// ---------- 品种/周期/环境变化时重建 ----------
+watch([instId, bar, () => connectionStore.environment], () => {
+  recreateChart()
 })
 
 // ---------- 生命周期 ----------
@@ -374,7 +380,6 @@ onMounted(async () => {
   await nextTick()
   initChart()
   setupResizeObserver()
-  await load()
 })
 
 onBeforeUnmount(() => {
@@ -425,9 +430,24 @@ onBeforeUnmount(() => {
   min-height: 600px;
 }
 
+.chart-loading-mask {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.85);
+  z-index: 10;
+  gap: 12px;
+  color: #909399;
+  font-size: 14px;
+}
+
 .chart-toolbar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   padding: 8px 16px;
   background: #fafafa;
   border-bottom: 1px solid #ebeef5;
@@ -465,12 +485,15 @@ onBeforeUnmount(() => {
   font-weight: 500;
 }
 
-.summary-item .value.up {
-  color: #26a69a;
-}
+.summary-item .value.up { color: #26a69a; }
+.summary-item .value.down { color: #ef5350; }
 
-.summary-item .value.down {
-  color: #ef5350;
+.chart-hint {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #b0b0b0;
+  font-size: 12px;
 }
 
 :deep(.el-card__body) {

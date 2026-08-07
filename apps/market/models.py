@@ -43,7 +43,7 @@ class Instrument(models.Model):
 
 
 class KLine(models.Model):
-    """K线数据"""
+    """K线数据（按环境隔离：模拟盘 / 实盘）"""
 
     BAR_CHOICES = [
         ('1m', '1分钟'),
@@ -61,8 +61,14 @@ class KLine(models.Model):
         ('1M', '1月'),
     ]
 
+    ENV_CHOICES = [
+        ('demo', '模拟盘'),
+        ('live', '实盘'),
+    ]
+
     instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE,
                                     related_name='klines', verbose_name='交易品种')
+    environment = models.CharField('交易环境', max_length=10, choices=ENV_CHOICES, default='demo', db_index=True)
     bar = models.CharField('K线周期', max_length=10, choices=BAR_CHOICES)
     timestamp = models.DateTimeField('K线时间', db_index=True)
     open = models.DecimalField('开盘价', max_digits=24, decimal_places=8)
@@ -79,14 +85,14 @@ class KLine(models.Model):
         db_table = 'market_kline'
         verbose_name = 'K线数据'
         verbose_name_plural = verbose_name
-        unique_together = [('instrument', 'bar', 'timestamp')]
+        unique_together = [('environment', 'instrument', 'bar', 'timestamp')]
         indexes = [
-            models.Index(fields=['instrument', 'bar', 'timestamp']),
+            models.Index(fields=['environment', 'instrument', 'bar', 'timestamp']),
         ]
         ordering = ['-timestamp']
 
     def __str__(self):
-        return f'{self.instrument.inst_id} {self.get_bar_display()} @ {self.timestamp}'
+        return f'[{self.get_environment_display()}] {self.instrument.inst_id} {self.get_bar_display()} @ {self.timestamp}'
 
 
 class Ticker(models.Model):

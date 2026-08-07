@@ -14,6 +14,7 @@ from django.utils import timezone
 from core.okx_client import get_okx_client
 from core.exceptions import MarketDataUnavailable
 from apps.market.models import Instrument, KLine, Ticker, FundingRate
+from apps.account.models import SystemConfig
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +55,40 @@ class MarketDataService:
 
     # ========== K线数据 ==========
     @staticmethod
+    def _get_current_env() -> str:
+        """获取当前激活的交易环境"""
+        try:
+            return SystemConfig.get_config().active_environment
+        except Exception:
+            return 'demo'
+
+    @staticmethod
+    def _parse_kline_item(instrument, bar, item) -> KLine:
+        """将 OKX 返回的单条 K 线数据解析并存入数据库"""
+        env = MarketDataService._get_current_env()
+        ts = datetime.fromtimestamp(int(item[0]) / 1000, tz=timezone.get_current_timezone())
+        kline, created = KLine.objects.update_or_create(
+            instrument=instrument,
+            environment=env,
+            bar=bar,
+            timestamp=ts,
+            defaults={
+                'open': Decimal(str(item[1])),
+                'high': Decimal(str(item[2])),
+                'low': Decimal(str(item[3])),
+                'close': Decimal(str(item[4])),
+                'vol': Decimal(str(item[5])),
+                'vol_ccy': Decimal(str(item[6])),
+                'vol_ccy_quote': Decimal(str(item[7])),
+                'confirm': int(item[8]) if len(item) > 8 else 1,
+            }
+        )
+        return kline
+
+    @staticmethod
     def fetch_klines(inst_id: str, bar: str = '1H', limit: int = 100,
                      before: str = '', after: str = '', is_history: bool = True) -> List[KLine]:
-        """获取并存储K线数据"""
+        """获取并存储K线数据（单次请求）"""
         client = get_okx_client()
 
         try:
@@ -78,35 +110,72 @@ class MarketDataService:
         if result['code'] != '0':
             raise MarketDataUnavailable(f'获取K线失败: {result.get("msg")}')
 
+        env = MarketDataService._get_current_env()
         klines = []
         for item in result.get('data', []):
-            ts = datetime.fromtimestamp(int(item[0]) / 1000, tz=timezone.get_current_timezone())
-            kline, created = KLine.objects.update_or_create(
-                instrument=instrument,
-                bar=bar,
-                timestamp=ts,
-                defaults={
-                    'open': Decimal(str(item[1])),
-                    'high': Decimal(str(item[2])),
-                    'low': Decimal(str(item[3])),
-                    'close': Decimal(str(item[4])),
-                    'vol': Decimal(str(item[5])),
-                    'vol_ccy': Decimal(str(item[6])),
-                    'vol_ccy_quote': Decimal(str(item[7])),
-                    'confirm': int(item[8]) if len(item) > 8 else 1,
-                }
-            )
-            klines.append(kline)
+            klines.append(MarketDataService._parse_kline_item(instrument, bar, item))
 
-        logger.info(f'获取 {inst_id} {bar} K线 {len(klines)} 条')
+        logger.info(f'[{env}] 获取 {inst_id} {bar} K线 {len(klines)} 条')
         return klines
 
     @staticmethod
+    def fetch_klines_history(inst_id: str, bar: str = '1H',
+                              total: int = 300, before: str = '') -> int:
+        """递归从OKX拉取历史K线并存入数据库，直到达到目标数量或没有更多数据。
+        每次API请求最多拉取300条（OKX历史K线接口上限），循环拉取直到满足 total 条。
+        返回实际存入的条数。
+        """
+        client = get_okx_client()
+        env = MarketDataService._get_current_env()
+        try:
+            instrument = Instrument.objects.get(inst_id=inst_id)
+        except Instrument.DoesNotExist:
+            raise MarketDataUnavailable(f'品种 {inst_id} 不存在，请先同步')
+
+        total_stored = 0
+        current_before = before  # 上一批数据中最旧的 timestamp（毫秒字符串），用于翻页
+        remaining = total
+        max_iterations = 20  # 安全上限，防止无限循环
+
+        for _ in range(max_iterations):
+            batch_limit = min(remaining, 300)
+            result = client.get_history_candlesticks(
+                inst_id=inst_id, bar=bar, limit=batch_limit,
+                after='', before=current_before
+            )
+
+            if result['code'] != '0':
+                raise MarketDataUnavailable(f'获取历史K线失败: {result.get("msg")}')
+
+            items = result.get('data', [])
+            if not items:
+                break
+
+            for item in items:
+                MarketDataService._parse_kline_item(instrument, bar, item)
+
+            total_stored += len(items)
+            remaining -= len(items)
+
+            # 用本批次最旧的时间戳作为下一次翻页的 before 参数
+            oldest_ts = items[-1][0]
+            current_before = oldest_ts
+
+            if remaining <= 0:
+                break
+
+            logger.info(f'  [{env}] 分页拉取 {inst_id} {bar}: 已拉取 {total_stored} 条，还需 {remaining} 条')
+
+        logger.info(f'[{env}] 历史K线拉取完成: {inst_id} {bar}, 共 {total_stored} 条')
+        return total_stored
+
+    @staticmethod
     def get_klines_df(inst_id: str, bar: str = '1H', limit: int = 200) -> 'pd.DataFrame':
-        """从数据库获取K线并返回DataFrame（用于因子计算）"""
+        """从数据库获取K线并返回DataFrame（用于因子计算，自动过滤当前环境）"""
         import pandas as pd
+        env = MarketDataService._get_current_env()
         klines = KLine.objects.filter(
-            instrument__inst_id=inst_id, bar=bar
+            environment=env, instrument__inst_id=inst_id, bar=bar
         ).order_by('timestamp')[:limit]
 
         if not klines:

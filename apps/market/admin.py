@@ -11,8 +11,8 @@ class InstrumentAdmin(admin.ModelAdmin):
 
 @admin.register(KLine)
 class KLineAdmin(admin.ModelAdmin):
-    list_display = ['instrument', 'bar', 'timestamp', 'open', 'high', 'low', 'close', 'vol', 'confirm']
-    list_filter = ['bar', 'confirm']
+    list_display = ['instrument', 'environment', 'bar', 'timestamp', 'open', 'high', 'low', 'close', 'vol', 'confirm']
+    list_filter = ['environment', 'bar', 'confirm']
     search_fields = ['instrument__inst_id']
     date_hierarchy = 'timestamp'
 
