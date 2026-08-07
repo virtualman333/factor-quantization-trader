@@ -1159,6 +1159,102 @@ th {{ background: #f5f7fa; }}
             'total_symbols': len(valid),
         }
 
+    # ========== 仪表盘聚合数据 ==========
+    @staticmethod
+    def strategy_ranking(user=None, limit: int = 10) -> List[Dict]:
+        """策略收益排行：按最近回测总收益排序"""
+        from apps.strategy.models import StrategyConfig
+        from django.db.models import Max
+
+        rows = []
+        strategies = StrategyConfig.objects.filter(user=user).annotate(
+            latest_bt=Max('backtests__created_at')
+        )
+        for s in strategies:
+            bt = s.backtests.order_by('-created_at').first()
+            rows.append({
+                'id': s.id,
+                'name': s.name,
+                'strategy_type': s.strategy_type,
+                'symbols': s.symbols,
+                'status': s.status,
+                'latest_return': float(bt.total_return) if bt else None,
+                'latest_sharpe': float(bt.sharpe_ratio or 0) if bt else None,
+                'backtest_date': bt.created_at.isoformat() if bt else None,
+            })
+        rows.sort(key=lambda r: (r['latest_return'] is not None, r['latest_return'] or -999), reverse=True)
+        return rows[:limit]
+
+    @staticmethod
+    def factor_heatmap(user=None, n_signals: int = 200) -> List[Dict]:
+        """因子热力图：各策略各因子的平均得分/方向贡献"""
+        from apps.strategy.models import SignalRecord
+
+        signals = list(
+            SignalRecord.objects.filter(strategy__user=user)
+            .order_by('-created_at')[:n_signals]
+        )
+        if not signals:
+            return []
+
+        agg = {}
+        for sig in signals:
+            detail = sig.factors_detail or {}
+            if not isinstance(detail, dict):
+                continue
+            strategy_key = sig.strategy.name if sig.strategy else 'unknown'
+            agg.setdefault(strategy_key, {})
+            for factor, score in detail.items():
+                try:
+                    score = float(score)
+                except (TypeError, ValueError):
+                    continue
+                agg[strategy_key].setdefault(factor, []).append(score)
+
+        # 汇总为平均值
+        result = []
+        for strategy_name, factors in agg.items():
+            for factor, scores in factors.items():
+                avg = sum(scores) / len(scores)
+                result.append({
+                    'strategy': strategy_name,
+                    'factor': factor,
+                    'score': round(avg, 4),
+                    'samples': len(scores),
+                })
+        result.sort(key=lambda r: -r['score'])
+        return result
+
+    @staticmethod
+    def market_overview(user=None, limit: int = 20) -> List[Dict]:
+        """市场概览：涨跌幅排行"""
+        from apps.market.models import Ticker
+        from apps.account.models import SystemConfig
+
+        env = SystemConfig.get_config(user=user).active_environment
+        tickers = Ticker.objects.select_related('instrument').filter(
+            instrument__is_active=True
+        )[:limit * 2]
+
+        rows = []
+        for t in tickers:
+            try:
+                last = float(t.last)
+                open24 = float(t.open_24h) if t.open_24h else 0
+            except (TypeError, ValueError):
+                continue
+            if not last or not open24:
+                continue
+            change = (last - open24) / open24 * 100
+            rows.append({
+                'inst_id': t.inst_id,
+                'last': last,
+                'change_pct': round(change, 2),
+                'vol_24h': float(t.vol_24h) if t.vol_24h else 0,
+            })
+        rows.sort(key=lambda r: -r['change_pct'])
+        return rows[:limit]
+
     # ========== 策略参数优化器（网格搜索） ==========
     @staticmethod
     def optimize_params(strategy: StrategyConfig,
