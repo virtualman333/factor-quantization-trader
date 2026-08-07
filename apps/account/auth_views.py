@@ -137,13 +137,28 @@ class MeView(APIView):
 
 
 class RegisterView(APIView):
-    """用户注册（公开接口，允许任何人注册）。"""
+    """用户注册（公开接口，受全局配置中的 allow_registration 控制）。"""
 
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
     throttle_classes = [LoginRateThrottle]
 
     def post(self, request):
+        # 检查是否允许注册
+        try:
+            from apps.account.models import GlobalConfig
+            global_config = GlobalConfig.get_config()
+            if not global_config.allow_registration:
+                return Response(
+                    {
+                        'code': status.HTTP_403_FORBIDDEN,
+                        'message': '管理员已关闭新用户注册',
+                        'data': None,
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        except Exception:
+            pass
         serializer = RegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         username = serializer.validated_data['username']
@@ -160,6 +175,12 @@ class RegisterView(APIView):
             username=username,
             password=serializer.validated_data['password'],
         )
+        # 为新用户创建默认配额
+        try:
+            from apps.account.models import UserQuota
+            UserQuota.get_quota(user)
+        except Exception:
+            pass
         return Response(
             {
                 'code': status.HTTP_201_CREATED,

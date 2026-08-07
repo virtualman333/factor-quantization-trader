@@ -43,6 +43,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'core.middleware.ApiErrorMiddleware',
+    'core.quota_middleware.UserQuotaMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'
