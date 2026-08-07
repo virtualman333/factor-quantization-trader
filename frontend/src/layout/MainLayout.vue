@@ -102,6 +102,19 @@
             </el-tag>
           </el-tooltip>
 
+          <el-dropdown @command="handleUserCommand">
+            <el-button size="small" type="default" circle>
+              <el-icon><User /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item disabled>
+                  <span class="user-name">{{ authStore.user?.username || '--' }}</span>
+                </el-dropdown-item>
+                <el-dropdown-item divided command="logout">退出登录</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
       </el-header>
       <el-main class="main">
@@ -113,12 +126,16 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
-import { useRoute } from 'vue-router'
-import { Fold, ArrowDown, Loading, CircleCheck, CircleClose } from '@element-plus/icons-vue'
+import { useRoute, useRouter } from 'vue-router'
+import { Fold, ArrowDown, Loading, CircleCheck, CircleClose, User } from '@element-plus/icons-vue'
 import { useConnectionStore } from '@/stores/connection.js'
+import { useAuthStore } from '@/stores/auth.js'
+import { ElMessage } from 'element-plus'
 
 const route = useRoute()
+const router = useRouter()
 const connectionStore = useConnectionStore()
+const authStore = useAuthStore()
 const isCollapse = ref(false)
 let pollTimer = null
 
@@ -128,6 +145,14 @@ async function handleEnvCommand(env) {
 
 async function refreshConnection() {
   await connectionStore.checkConnection().catch(() => {})
+}
+
+function handleUserCommand(command) {
+  if (command === 'logout') {
+    authStore.logout()
+    ElMessage.success('已退出登录')
+    router.push('/login')
+  }
 }
 
 onMounted(async () => {
@@ -152,6 +177,7 @@ onUnmounted(() => {
 .title { font-size: 18px; font-weight: 600; }
 .header-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
 .status-tag { display: flex; align-items: center; gap: 4px; }
+.user-name { color: #606266; }
 .main { background: #f5f7fa; padding: 20px; overflow-y: auto; }
 .el-menu { border-right: none; }
 </style>

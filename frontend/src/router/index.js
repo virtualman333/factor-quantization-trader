@@ -1,10 +1,18 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { getToken } from '@/utils/token.js'
 
 const routes = [
+  {
+    path: '/login',
+    name: 'Login',
+    component: () => import('@/views/auth/Login.vue'),
+    meta: { title: '登录', requiresAuth: false },
+  },
   {
     path: '/',
     component: () => import('@/layout/MainLayout.vue'),
     redirect: '/dashboard',
+    meta: { requiresAuth: true },
     children: [
       {
         path: 'dashboard',
@@ -97,6 +105,24 @@ const routes = [
 const router = createRouter({
   history: createWebHistory(),
   routes,
+})
+
+// 路由守卫：未登录时重定向到 /login
+router.beforeEach((to, from, next) => {
+  const token = getToken()
+  if (to.path === '/login') {
+    if (token) {
+      next('/')
+    } else {
+      next()
+    }
+    return
+  }
+  if (to.matched.some((r) => r.meta.requiresAuth !== false) && !token) {
+    next({ path: '/login', query: { redirect: to.fullPath } })
+    return
+  }
+  next()
 })
 
 export default router

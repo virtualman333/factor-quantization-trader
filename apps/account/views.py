@@ -2,7 +2,6 @@
 
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
-from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from apps.account.models import (
@@ -25,7 +24,6 @@ def get_active_credential():
 
 class SystemConfigViewSet(viewsets.ViewSet):
     """系统全局配置 API"""
-    permission_classes = [AllowAny]
 
     def list(self, request):
         config = SystemConfig.get_config()
@@ -46,7 +44,6 @@ class SystemConfigViewSet(viewsets.ViewSet):
 
 class OKXCredentialViewSet(viewsets.ModelViewSet):
     """OKX API 凭证管理 API（按 demo / live 分别存储）"""
-    permission_classes = [AllowAny]
     queryset = OKXCredential.objects.all().order_by('name')
     serializer_class = OKXCredentialSerializer
     lookup_field = 'name'
