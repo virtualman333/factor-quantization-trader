@@ -1,9 +1,8 @@
 from django.conf import settings
-from django.contrib import admin
 from django.urls import path, include
 
 urlpatterns = [
-    path('admin/', admin.site.urls),
+    # 不使用 Django 自带 /admin/，管理端由前端 Vue 实现
     path('api/market/', include('apps.market.urls')),
     path('api/account/', include('apps.account.urls')),
     path('api/strategy/', include('apps.strategy.urls')),

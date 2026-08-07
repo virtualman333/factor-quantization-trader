@@ -18,7 +18,7 @@ DEBUG = env.bool('DJANGO_DEBUG', default=True)
 ALLOWED_HOSTS = env.list('DJANGO_ALLOWED_HOSTS', default=['*'])
 
 INSTALLED_APPS = [
-    'django.contrib.admin',
+    # 注: 不使用 Django 自带 /admin/，管理端由前端 Vue 实现 (apps/account/admin_views.py)
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',

@@ -116,7 +116,7 @@ echo   全部服务已启动！
 echo.
 echo   前端:       http://localhost:5173
 echo   后端 API:   http://localhost:8000/api/
-echo   Admin:      http://localhost:8000/admin/
+echo   管理端:     http://localhost:5173/admin
 echo   Silk 分析:  http://localhost:8000/silk/
 echo   Flower:     http://localhost:5555/
 echo.
