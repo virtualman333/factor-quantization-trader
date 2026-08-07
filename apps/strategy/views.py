@@ -66,16 +66,60 @@ def _parse_backtest_dates(request):
     return start_dt, end_dt
 
 
+def _task_owned_by(task, user, owned_strategy_ids, owned_portfolio_ids, owned_backtest_ids):
+    """判断异步任务是否归属于当前用户（含管理员，仅返回自己的）"""
+    import json
+
+    try:
+        kwargs = json.loads(task.task_kwargs or '{}')
+    except Exception:
+        return False
+
+    user_id = kwargs.get('user_id')
+    if user_id is not None:
+        try:
+            return int(user_id) == user.id
+        except (TypeError, ValueError):
+            pass
+
+    strategy_id = kwargs.get('strategy_id')
+    if strategy_id is not None:
+        try:
+            return int(strategy_id) in owned_strategy_ids
+        except (TypeError, ValueError):
+            return False
+
+    strategy_ids = kwargs.get('strategy_ids')
+    if strategy_ids:
+        try:
+            return any(int(sid) in owned_strategy_ids for sid in strategy_ids)
+        except (TypeError, ValueError):
+            return False
+
+    portfolio_id = kwargs.get('portfolio_id')
+    if portfolio_id is not None:
+        try:
+            return int(portfolio_id) in owned_portfolio_ids
+        except (TypeError, ValueError):
+            return False
+
+    backtest_id = kwargs.get('backtest_id')
+    if backtest_id is not None:
+        try:
+            return int(backtest_id) in owned_backtest_ids
+        except (TypeError, ValueError):
+            return False
+
+    return False
+
+
 class StrategyConfigViewSet(viewsets.ModelViewSet):
     """策略配置 CRUD API"""
     serializer_class = StrategyConfigSerializer
 
     def get_queryset(self):
-        # superuser（管理员）可查看所有用户的策略，普通用户仅看自己的
-        if self.request.user.is_superuser:
-            qs = StrategyConfig.objects.all()
-        else:
-            qs = StrategyConfig.objects.filter(user=self.request.user)
+        # 所有用户（含管理员）仅可查看自己的策略
+        qs = StrategyConfig.objects.filter(user=self.request.user)
         params = self.request.query_params
         keyword = params.get('keyword')
         if keyword:
@@ -210,10 +254,26 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
             'apps.strategy.tasks.run_compare_strategies_task',
             'apps.strategy.tasks.run_multi_symbol_backtest_task',
         ]
+        # 先取较宽范围，内存中按归属过滤后再截断
         rows = TaskResult.objects.filter(
             task_name__in=strategy_tasks,
             date_created__gte=since,
-        ).order_by('-date_created')[:50]
+        ).order_by('-date_created')[:200]
+
+        # 仅保留当前用户的任务（含管理员，均只看自己的）
+        owned_strategy_ids = list(
+            StrategyConfig.objects.filter(user=request.user).values_list('id', flat=True)
+        )
+        owned_portfolio_ids = list(
+            StrategyPortfolio.objects.filter(user=request.user).values_list('id', flat=True)
+        )
+        owned_backtest_ids = list(
+            BacktestResult.objects.filter(strategy__user=request.user).values_list('id', flat=True)
+        )
+        rows = [
+            t for t in rows
+            if _task_owned_by(t, request.user, owned_strategy_ids, owned_portfolio_ids, owned_backtest_ids)
+        ][:50]
 
         # 任务名 -> 中文标签
         TASK_LABELS = {
@@ -488,9 +548,7 @@ class BacktestResultViewSet(viewsets.ReadOnlyModelViewSet):
     filterset_fields = ['strategy']
 
     def get_queryset(self):
-        # superuser 可查看所有回测，普通用户仅自己的
-        if self.request.user.is_superuser:
-            return BacktestResult.objects.all()
+        # 所有用户（含管理员）仅可查看自己的回测结果
         return BacktestResult.objects.filter(strategy__user=self.request.user)
 
     @action(detail=True, methods=['post'])
