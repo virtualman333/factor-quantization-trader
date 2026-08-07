@@ -212,6 +212,11 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.account.tasks.redis_memory_monitor_task',
         'schedule': 600.0,
     },
+    # K 线数据清理（每天凌晨 3 点）
+    'clean-klines-every-day': {
+        'task': 'apps.market.tasks.clean_klines_task',
+        'schedule': 3 * 60 * 60,
+    },
 }
 
 

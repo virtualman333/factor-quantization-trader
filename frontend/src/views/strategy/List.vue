@@ -5,6 +5,23 @@
       <el-button type="primary" :icon="Plus" @click="openDialog(null)">新建策略</el-button>
     </div>
 
+    <!-- 新手提示 -->
+    <el-alert
+      v-if="showGuide"
+      type="info"
+      :closable="true"
+      show-icon
+      class="guide-alert"
+      @close="onGuideClose"
+    >
+      <template #title>初次使用？先了解策略机制</template>
+      <div class="guide-text">
+        策略会按 K 线周期自动运行并生成买卖信号。建议先在<term-tip term-key="backtest" />中验证历史表现，
+        重点关注<term-tip term-key="max_drawdown" />和<term-tip term-key="sharpe" />，满意后再激活。
+        <el-link type="primary" :underline="false" @click="openHelp" style="margin-left:8px">查看新手引导 →</el-link>
+      </div>
+    </el-alert>
+
     <!-- 筛选栏 -->
     <el-card shadow="never" class="filter-bar">
       <el-form :inline="true" @submit.prevent>
@@ -67,6 +84,7 @@
           <el-button size="small" type="danger" @click="executeSignals(row.id)">执行</el-button>
           <el-button size="small" @click="showBacktest(row)">回测</el-button>
           <el-button size="small" type="info" @click="showOptimize(row)">优化</el-button>
+          <el-button size="small" type="danger" :icon="Delete" @click="remove(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -92,7 +110,8 @@
         <el-form-item label="描述">
           <el-input v-model="form.description" type="textarea" />
         </el-form-item>
-        <el-form-item label="策略类型">
+        <el-form-item>
+          <template #label>策略类型 <term-tip term-key="strategy" /></template>
           <el-select v-model="form.strategy_type">
             <el-option label="因子综合评分" value="factor_composite" />
             <el-option label="趋势跟踪" value="trend_follow" />
@@ -122,14 +141,16 @@
             <el-option label="双向" value="both" />
           </el-select>
         </el-form-item>
-        <el-form-item label="保证金模式">
+        <el-form-item>
+          <template #label>保证金模式 <term-tip term-key="td_mode" /></template>
           <el-select v-model="form.td_mode">
             <el-option label="现金/现货" value="cash" />
             <el-option label="全仓合约" value="cross" />
             <el-option label="逐仓合约" value="isolated" />
           </el-select>
         </el-form-item>
-        <el-form-item label="杠杆倍数">
+        <el-form-item>
+          <template #label>杠杆倍数 <term-tip term-key="leverage" /></template>
           <el-input-number v-model="form.leverage" :min="1" :max="100" :step="1" />
         </el-form-item>
         <el-form-item label="初始资金">
@@ -141,13 +162,16 @@
         <el-form-item label="最大持仓">
           <el-input-number v-model="form.max_positions" :min="1" :max="20" />
         </el-form-item>
-        <el-form-item label="止损比例">
+        <el-form-item>
+          <template #label>止损比例 <term-tip term-key="stop_loss" /></template>
           <el-input-number v-model="form.stop_loss_pct" :min="0.01" :max="0.5" :step="0.01" />
         </el-form-item>
-        <el-form-item label="止盈比例">
+        <el-form-item>
+          <template #label>止盈比例 <term-tip term-key="take_profit" /></template>
           <el-input-number v-model="form.take_profit_pct" :min="0.01" :max="1" :step="0.01" />
         </el-form-item>
-        <el-form-item label="因子列表" v-if="form.strategy_type === 'factor_composite'">
+        <el-form-item v-if="form.strategy_type === 'factor_composite'">
+          <template #label>因子列表 <term-tip term-key="factor" /></template>
           <el-input v-model="factorsStr" placeholder="逗号分隔因子名 (momentum,rsi,macd)" />
         </el-form-item>
 
@@ -199,7 +223,8 @@
             <el-switch v-model="form.params.enhanced_no_single_pulse" />
             <span class="hint">增强1：要求前一根成交量≥均量×1.2</span>
           </el-form-item>
-          <el-form-item label="单笔风险比例">
+          <el-form-item>
+            <template #label>单笔风险比例 <term-tip term-key="risk_per_trade" /></template>
             <el-input-number v-model="form.params.risk_per_trade" :min="0.001" :max="0.05" :step="0.001" />
             <span class="hint">仓位=资金×比例÷止损距离(0.5%~1%)</span>
           </el-form-item>
@@ -306,16 +331,27 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, inject } from 'vue'
 import {
-  getStrategies, createStrategy, updateStrategy, deleteStrategy,
-  activateStrategy, pauseStrategy, runSignals as runSignalsApi,
+  runSignals as runSignalsApi,
   executeSignals as execSignalsApi, runBacktest as runBacktestApi,
   optimizeParams as optimizeParamsApi, optimizeWeights as optimizeWeightsApi,
 } from '@/api/strategy'
 import { getInstruments as getMarketInstruments } from '@/api/market'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Search, RefreshLeft } from '@element-plus/icons-vue'
+import { useStrategyStore } from '@/stores/strategy'
+import { useConfirm } from '@/composables/useConfirm'
+import { useFormDraft } from '@/composables/useFormDraft'
+import { ElMessage } from 'element-plus'
+import { Plus, Search, RefreshLeft, Delete } from '@element-plus/icons-vue'
+
+const strategyStore = useStrategyStore()
+const { confirm } = useConfirm()
+const { loadDraft, saveDraft, clearDraft, hasDraft } = useFormDraft('strategy_edit', {})
+const isNew = ref(true)
+const shortcutHelp = inject('shortcutHelp', null)
+const showGuide = ref(!localStorage.getItem('strategy_guide_dismissed'))
+function openHelp() { shortcutHelp?.open() }
+function onGuideClose() { localStorage.setItem('strategy_guide_dismissed', '1'); showGuide.value = false }
 
 const STRATEGY_TYPE_OPTIONS = [
   { label: '因子综合评分', value: 'factor_composite' },
@@ -422,9 +458,9 @@ const load = async () => {
       page_size: pageSize.value,
       ...Object.fromEntries(Object.entries(filters.value).filter(([, v]) => v !== '' && v != null)),
     }
-    const res = await getStrategies(params)
-    tableData.value = res.results || res
-    total.value = res.count ?? (res.results || res).length
+    const { results, count } = await strategyStore.fetchList(params, { force: true })
+    tableData.value = results
+    total.value = count
   } catch (e) { ElMessage.error(e.message) }
   loading.value = false
 }
@@ -492,16 +528,33 @@ const runWeightOptimize = async () => {
 
 const openDialog = (row) => {
   if (row) {
+    isNew.value = false
     form.value = { ...row, symbols: (row.symbols || []).slice(), params: mergeVolumeParams(row.params) }
     factorsStr.value = (row.factors || []).join(',')
   } else {
-    form.value = { strategy_type: 'trend_follow', inst_type: 'SWAP', symbols: [], params: { ...DEFAULT_VOLUME_PARAMS }, bar: '5m', direction: 'both', td_mode: 'cross', leverage: 3, initial_capital: 10000, order_size_pct: 0.1, max_positions: 5, stop_loss_pct: 0.05, take_profit_pct: 0.1, status: 'draft' }
-
-    factorsStr.value = ''
+    isNew.value = true
+    const defaultForm = { strategy_type: 'trend_follow', inst_type: 'SWAP', symbols: [], params: { ...DEFAULT_VOLUME_PARAMS }, bar: '5m', direction: 'both', td_mode: 'cross', leverage: 3, initial_capital: 10000, order_size_pct: 0.1, max_positions: 5, stop_loss_pct: 0.05, take_profit_pct: 0.1, status: 'draft' }
+    // 恢复未保存的草稿（表单持久化）
+    const restored = loadDraft()
+    if (restored && Object.keys(restored).length > 1) {
+      form.value = { ...defaultForm, ...restored, params: mergeVolumeParams(restored.params) }
+      factorsStr.value = Array.isArray(restored.factors) ? restored.factors.join(',') : ''
+      ElMessage.info('已恢复上次未保存的草稿')
+    } else {
+      form.value = { ...defaultForm }
+      factorsStr.value = ''
+    }
   }
   loadInstruments(form.value.inst_type || 'SWAP')
   dialogVisible.value = true
 }
+
+// 新建模式下自动持久化表单草稿
+watch(form, () => {
+  if (isNew.value && dialogVisible.value) {
+    saveDraft({ ...form.value, factors: factorsStr.value.split(',').map(s => s.trim()).filter(Boolean) })
+  }
+}, { deep: true })
 
 watch(() => form.value.strategy_type, (val) => {
   if (val === 'volume_breakout' && (!form.value.params || Object.keys(form.value.params).length === 0)) {
@@ -515,15 +568,26 @@ const save = async () => {
     factors: factorsStr.value.split(',').map(s => s.trim()).filter(Boolean),
   }
   try {
-    if (data.id) { await updateStrategy(data.id, data); ElMessage.success('更新成功') }
-    else { await createStrategy(data); ElMessage.success('创建成功') }
+    if (data.id) { await strategyStore.update(data.id, data); ElMessage.success('更新成功') }
+    else { await strategyStore.create(data); ElMessage.success('创建成功'); clearDraft() }
     dialogVisible.value = false
+    isNew.value = false
     await load()
   } catch (e) { ElMessage.error(e.message) }
 }
 
-const activate = async (id) => { await activateStrategy(id); ElMessage.success('已激活'); load() }
-const pause = async (id) => { await pauseStrategy(id); ElMessage.success('已暂停'); load() }
+const activate = async (id) => { await strategyStore.activate(id); ElMessage.success('已激活'); load() }
+const pause = async (id) => { await strategyStore.pause(id); ElMessage.success('已暂停'); load() }
+
+const remove = async (row) => {
+  const ok = await confirm.deleteStrategy(row.name)
+  if (!ok) return
+  try {
+    await strategyStore.remove(row.id)
+    ElMessage.success('已删除')
+    load()
+  } catch (e) { ElMessage.error(e.message) }
+}
 const runSignals = async (id) => { await runSignalsApi(id); ElMessage.success('信号已生成'); load() }
 const executeSignals = async (id) => {
   try { await execSignalsApi(id); ElMessage.success('信号已执行') }
@@ -556,6 +620,8 @@ onMounted(load)
 
 <style scoped>
 .page-header { display: flex; justify-content: space-between; align-items: center; }
+.guide-alert { margin-top: 16px; }
+.guide-text { font-size: 13px; line-height: 1.8; }
 .filter-bar { margin-top: 16px; }
 .filter-bar :deep(.el-card__body) { padding: 16px 16px 0; }
 .pager { margin-top: 16px; justify-content: flex-end; display: flex; }

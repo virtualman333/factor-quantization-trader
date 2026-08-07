@@ -63,6 +63,12 @@ const routes = [
         meta: { title: '账户分析', icon: 'TrendCharts' },
       },
       {
+        path: 'analysis',
+        name: 'DataAnalysis',
+        component: () => import('@/views/analysis/Index.vue'),
+        meta: { title: '数据分析', icon: 'Histogram' },
+      },
+      {
         path: 'strategy/list',
         name: 'StrategyList',
         component: () => import('@/views/strategy/List.vue'),

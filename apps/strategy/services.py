@@ -1255,6 +1255,184 @@ th {{ background: #f5f7fa; }}
         rows.sort(key=lambda r: -r['change_pct'])
         return rows[:limit]
 
+    # ========== 相关性分析矩阵 ==========
+    @staticmethod
+    def correlation_matrix(symbols: List[str], bar: str = '1D', limit: int = 200,
+                           user=None) -> Dict:
+        """计算多品种收益率相关性矩阵"""
+        import numpy as np
+        import pandas as pd
+        from apps.market.models import KLine
+        from apps.account.models import SystemConfig
+
+        env = SystemConfig.get_config(user=user).active_environment
+        closes = {}
+        for sym in symbols:
+            rows = list(
+                KLine.objects.filter(
+                    instrument__inst_id=sym, bar=bar, environment=env,
+                ).order_by('-timestamp')[:limit]
+            )
+            if len(rows) < 20:
+                continue
+            closes[sym] = pd.Series(
+                [float(r.close) for r in rows],
+                index=[r.timestamp for r in rows],
+            ).sort_index()
+
+        if len(closes) < 2:
+            return {'error': '至少需要2个有足够数据的品种'}
+
+        df = pd.DataFrame(closes).dropna(how='all')
+        returns = df.pct_change().dropna()
+        corr = returns.corr().round(4)
+
+        return {
+            'symbols': list(corr.index),
+            'matrix': corr.values.tolist(),
+            'sample_size': len(returns),
+        }
+
+    # ========== 因子有效性统计（IC/IR） ==========
+    @staticmethod
+    def factor_ic_analysis(strategy: StrategyConfig, bar: str = '1D',
+                           lookback: int = 100, user=None) -> Dict:
+        """因子 IC（信息系数）分析：因子值与未来收益的秩相关
+        IC = Spearman(因子值, 未来N期收益)，IR = mean(IC)/std(IC)
+        """
+        import numpy as np
+        from scipy import stats
+        from apps.market.models import KLine
+        from apps.account.models import SystemConfig
+        from apps.strategy.factors import FactorEngine
+
+        env = SystemConfig.get_config(user=user).active_environment
+        symbols = list(strategy.symbols or [])[:3]
+        if not symbols:
+            return {'error': '策略未配置标的'}
+
+        results = {}
+        for sym in symbols:
+            rows = list(
+                KLine.objects.filter(
+                    instrument__inst_id=sym, bar=bar, environment=env,
+                ).order_by('-timestamp')[:lookback + 60]
+            )
+            if len(rows) < 60:
+                continue
+            rows.sort(key=lambda r: r.timestamp)
+            df = pd.DataFrame([{
+                'timestamp': r.timestamp,
+                'open': float(r.open),
+                'high': float(r.high),
+                'low': float(r.low),
+                'close': float(r.close),
+                'volume': float(r.vol),
+            } for r in rows])
+            engine = FactorEngine(df)
+            factor_names = list(strategy.factors or [])
+            engine.calculate_all(factor_names)
+            # 未来5期收益
+            future_ret = df['close'].shift(-5) / df['close'] - 1
+            per_factor = {}
+            for name, fr in engine._results.items():
+                # 用因子引擎重算序列化因子值（简化：用最近100期计算）
+                vals = []
+                for i in range(30, len(df)):
+                    sub = df.iloc[:i + 1]
+                    if name in getattr(engine, '_custom_formulas', {}):
+                        continue
+                    try:
+                        sub_engine = FactorEngine(sub)
+                        sub_engine.calculate_all([name])
+                        vals.append(sub_engine._results[name].value)
+                    except Exception:
+                        vals.append(np.nan)
+                if len(vals) < 20:
+                    continue
+                vals_arr = np.array(vals[-len(future_ret.dropna()):])
+                fwd = future_ret.values[-len(vals_arr):]
+                mask = ~(np.isnan(vals_arr) | np.isnan(fwd))
+                if mask.sum() < 10:
+                    continue
+                ic, _ = stats.spearmanr(vals_arr[mask], fwd[mask])
+                per_factor[name] = {'ic': round(float(ic), 4), 'samples': int(mask.sum())}
+            results[sym] = per_factor
+
+        return {'symbols': list(results.keys()), 'factors': results}
+
+    # ========== 市场状态分类 ==========
+    @staticmethod
+    def market_state(inst_id: str, bar: str = '1D', lookback: int = 60,
+                     user=None) -> Dict:
+        """市场状态分类：趋势/震荡/高波动
+        基于 ADX + 布林带宽度 + ATR 相对波动率
+        """
+        from apps.market.models import KLine
+        from apps.account.models import SystemConfig
+        import pandas as pd
+
+        env = SystemConfig.get_config(user=user).active_environment
+        rows = list(
+            KLine.objects.filter(
+                instrument__inst_id=inst_id, bar=bar, environment=env,
+            ).order_by('-timestamp')[:lookback]
+        )
+        if len(rows) < 30:
+            return {'error': '数据不足'}
+
+        rows.sort(key=lambda r: r.timestamp)
+        df = MarketDataService.klines_to_df(rows)
+
+        # ADX 趋势强度
+        try:
+            adx = ta.trend.ADXIndicator(
+                df['high'], df['low'], df['close'], window=14
+            ).adx().iloc[-1]
+            adx = float(adx) if not pd.isna(adx) else 0
+        except Exception:
+            adx = 0
+
+        # ATR 波动率（相对价格）
+        try:
+            atr = ta.volatility.AverageTrueRange(
+                df['high'], df['low'], df['close'], window=14
+            ).average_true_range().iloc[-1]
+            atr_ratio = float(atr / df['close'].iloc[-1]) if atr and not pd.isna(atr) else 0
+        except Exception:
+            atr_ratio = 0
+
+        # 分类逻辑
+        if adx > 30 and atr_ratio > 0.03:
+            state = 'high_trend'        # 高波动趋势
+        elif adx > 25:
+            state = 'trend'             # 趋势
+        elif atr_ratio > 0.03:
+            state = 'high_volatility'   # 高波动震荡
+        else:
+            state = 'range'             # 低波动震荡
+
+        state_labels = {
+            'high_trend': '高波动趋势',
+            'trend': '趋势行情',
+            'high_volatility': '高波动震荡',
+            'range': '震荡行情',
+        }
+        return {
+            'inst_id': inst_id,
+            'bar': bar,
+            'state': state,
+            'state_label': state_labels[state],
+            'adx': round(adx, 2),
+            'atr_ratio': round(atr_ratio, 5),
+            'suggest': {
+                'trend': '顺势策略',
+                'high_trend': '趋势跟踪，控制仓位',
+                'high_volatility': '波动套利/观望',
+                'range': '高抛低吸/区间策略',
+            }.get(state),
+        }
+
     # ========== 策略参数优化器（网格搜索） ==========
     @staticmethod
     def optimize_params(strategy: StrategyConfig,

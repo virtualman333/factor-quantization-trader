@@ -61,6 +61,7 @@
       <div class="toolbar-row">
         <div class="toolbar-group">
           <span class="toolbar-label">主图指标</span>
+          <term-tip :term-key="mainIndicator === 'none' ? 'ma' : mainIndicator" />
           <el-radio-group v-model="mainIndicator" size="small" @change="applyMainIndicator">
             <el-radio-button value="none">无</el-radio-button>
             <el-radio-button value="ma">MA</el-radio-button>
@@ -70,6 +71,7 @@
         </div>
         <div class="toolbar-group">
           <span class="toolbar-label">副图指标</span>
+          <term-tip :term-key="subIndicator === 'none' ? 'macd' : subIndicator" />
           <el-radio-group v-model="subIndicator" size="small" @change="applySubIndicator">
             <el-radio-button value="none">无</el-radio-button>
             <el-radio-button value="macd">MACD</el-radio-button>
@@ -128,11 +130,12 @@
         </div>
         <div class="chart-hint">
           <el-icon><Mouse /></el-icon>
-          <span>滚轮缩放 | 拖拽滑动查看更多</span>
+          <span class="desktop-only">滚轮缩放 | 拖拽滑动查看更多</span>
+          <span class="mobile-only">双指缩放 | 单指拖动查看更多</span>
         </div>
       </div>
       <div class="chart-container">
-        <div ref="chartRef" class="chart-box"></div>
+        <div ref="chartRef" class="chart-box touch-action-none"></div>
         <!-- 加载状态 -->
         <div v-if="loading && !dataSummary" class="chart-loading-mask">
           <el-icon class="is-loading" :size="32"><Loading /></el-icon>
@@ -881,5 +884,35 @@ onBeforeUnmount(() => {
 
 :deep(.el-button-group .el-button) {
   margin-left: 0;
+}
+
+/* ===== 移动端响应式 ===== */
+@media (max-width: 768px) {
+  .page-header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .header-right {
+    flex-wrap: wrap;
+    width: 100%;
+    gap: 6px;
+  }
+  .chart-box {
+    height: calc(100vh - 360px);
+    min-height: 360px;
+  }
+  .toolbar-row {
+    gap: 12px;
+  }
+  .data-summary {
+    gap: 4px;
+  }
+  .summary-item {
+    padding: 2px 6px;
+    font-size: 12px;
+  }
+  .mini-chart {
+    height: 70px;
+  }
 }
 </style>

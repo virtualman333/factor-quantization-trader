@@ -1,7 +1,16 @@
 <template>
   <el-container class="layout">
-    <el-aside :width="isCollapse ? '64px' : '220px'" class="aside">
-      <div class="logo" @click="$router.push('/dashboard')">
+    <!-- 移动端遮罩层 -->
+    <transition name="fade">
+      <div v-if="isMobile && !isCollapse" class="aside-mask" @click="isCollapse = true" />
+    </transition>
+
+    <el-aside
+      :width="isCollapse ? '64px' : '220px'"
+      class="aside"
+      :class="{ 'aside-mobile-drawer': isMobile, 'aside-mobile-hidden': isMobile && isCollapse }"
+    >
+      <div class="logo" @click="$router.push('/dashboard'); isMobile && (isCollapse = true)">
         <el-icon :size="24"><TrendCharts /></el-icon>
         <span v-show="!isCollapse" class="logo-text">量化交易系统</span>
       </div>
@@ -12,6 +21,7 @@
         background-color="#1d1e2c"
         text-color="#a6a9b6"
         active-text-color="#409eff"
+        @select="onMenuSelect"
       >
         <el-menu-item index="/dashboard">
           <el-icon><Odometer /></el-icon>
@@ -75,9 +85,17 @@
 
     <el-container>
       <el-header class="header">
-        <el-button :icon="Fold" text @click="isCollapse = !isCollapse" class="collapse-btn" />
+        <el-button
+          :icon="isMobile ? Expand : Fold"
+          text
+          @click="isCollapse = !isCollapse"
+          class="collapse-btn"
+        />
         <span class="title">{{ route.meta.title || '' }}</span>
         <div class="header-right">
+          <el-tooltip :content="theme.isDark ? '切换到浅色模式' : '切换到深色模式'" placement="bottom">
+            <el-button :icon="theme.isDark ? Sunny : Moon" circle @click="theme.toggle" />
+          </el-tooltip>
           <el-dropdown @command="handleEnvCommand" :disabled="connectionStore.loading">
             <el-button size="small" :type="connectionStore.environment === 'live' ? 'danger' : 'primary'">
               {{ connectionStore.envLabel }}
@@ -99,7 +117,7 @@
             <el-tag
               size="small"
               :type="realtimeStore.statusType"
-              class="status-tag"
+              class="status-tag desktop-only"
               @click="realtimeStore.reconnect"
               :style="{ cursor: 'pointer' }"
             >
@@ -114,7 +132,7 @@
             <el-tag
               size="small"
               :type="connectionStore.statusType"
-              class="status-tag"
+              class="status-tag desktop-only"
               @click="refreshConnection"
               :style="{ cursor: 'pointer' }"
             >
@@ -123,6 +141,20 @@
               <el-icon v-else :size="12"><CircleClose /></el-icon>
               {{ connectionStore.statusText }}
             </el-tag>
+          </el-tooltip>
+
+          <!-- 深色模式切换 -->
+          <el-tooltip :content="theme.isDark.value ? '切换到浅色模式' : '切换到深色模式'" placement="bottom">
+            <el-button size="small" circle @click="theme.toggle">
+              <el-icon><Sunny v-if="theme.isDark.value" /><Moon v-else /></el-icon>
+            </el-button>
+          </el-tooltip>
+
+          <!-- 快捷键帮助 -->
+          <el-tooltip content="使用帮助与快捷键（?）" placement="bottom">
+            <el-button size="small" circle @click="shortcutHelp?.open()">
+              <el-icon><QuestionFilled /></el-icon>
+            </el-button>
           </el-tooltip>
 
           <el-dropdown @command="handleUserCommand">
@@ -152,12 +184,18 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, inject, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Fold, ArrowDown, Loading, CircleCheck, CircleClose, Connection, User } from '@element-plus/icons-vue'
+import {
+  Fold, Expand, ArrowDown, Loading, CircleCheck, CircleClose,
+  Connection, User, Sunny, Moon, QuestionFilled,
+} from '@element-plus/icons-vue'
 import { useConnectionStore } from '@/stores/connection.js'
 import { useRealtimeStore } from '@/stores/realtime.js'
 import { useAuthStore } from '@/stores/auth.js'
+import { useTheme } from '@/composables/useTheme.js'
+import { useKeyboard } from '@/composables/useKeyboard.js'
+import { useConfirm } from '@/composables/useConfirm.js'
 import { ElMessage } from 'element-plus'
 
 const route = useRoute()
@@ -165,10 +203,34 @@ const router = useRouter()
 const connectionStore = useConnectionStore()
 const realtimeStore = useRealtimeStore()
 const authStore = useAuthStore()
-const isCollapse = ref(false)
+const theme = useTheme()
+const { confirm } = useConfirm()
+const { registerShortcut } = useKeyboard()
+
+// 响应式断点
+const isMobile = ref(window.innerWidth <= 768)
+const isCollapse = ref(isMobile.value)
+
+const shortcutHelp = inject('shortcutHelp', null)
+
 let pollTimer = null
+let resizeHandler = null
+
+function onResize() {
+  const wasMobile = isMobile.value
+  isMobile.value = window.innerWidth <= 768
+  // 从移动端切到桌面端：自动展开侧边栏
+  if (!isMobile.value && wasMobile) isCollapse.value = false
+  // 从桌面端切到移动端：自动折叠
+  if (isMobile.value && !wasMobile) isCollapse.value = true
+}
 
 async function handleEnvCommand(env) {
+  // 切换到实盘需二次确认
+  if (env === 'live' && connectionStore.environment !== 'live') {
+    const ok = await confirm.switchLive()
+    if (!ok) return
+  }
   await connectionStore.switchEnv(env)
 }
 
@@ -186,7 +248,38 @@ function handleUserCommand(command) {
   }
 }
 
+// 移动端选择菜单后自动收起侧边栏
+function onMenuSelect() {
+  if (isMobile.value) isCollapse.value = true
+}
+
+// ===== 全局快捷键 =====
+registerShortcut({
+  key: 'b', ctrl: true, description: '折叠/展开侧边栏',
+  handler: () => { isCollapse.value = !isCollapse.value },
+})
+registerShortcut({
+  key: 'd', ctrl: true, description: '切换深色/浅色模式',
+  handler: () => theme.toggle(),
+})
+registerShortcut({
+  key: '/', description: '快捷键说明',
+  handler: () => shortcutHelp?.open(),
+})
+// 兼容 ? 键（Shift+/）
+registerShortcut({
+  key: '?', shift: true, description: '快捷键说明',
+  handler: () => shortcutHelp?.open(),
+})
+
+// 路由切换时，移动端自动收起侧边栏
+watch(() => route.path, () => {
+  if (isMobile.value) isCollapse.value = true
+})
+
 onMounted(async () => {
+  window.addEventListener('resize', onResize)
+  resizeHandler = onResize
   await connectionStore.init()
   realtimeStore.ensureOpen()
   pollTimer = setInterval(() => {
@@ -196,6 +289,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
+  if (resizeHandler) window.removeEventListener('resize', resizeHandler)
   realtimeStore.close()
 })
 </script>
@@ -205,7 +299,7 @@ onUnmounted(() => {
 .aside {
   background: #1d1e2c;
   overflow: hidden;
-  transition: width 0.3s;
+  transition: width 0.3s, transform 0.3s;
   display: flex;
   flex-direction: column;
 }
@@ -229,21 +323,56 @@ onUnmounted(() => {
   overflow-y: auto;
   overflow-x: hidden;
 }
-.aside :deep(.el-menu::-webkit-scrollbar) {
-  width: 4px;
-}
+.aside :deep(.el-menu::-webkit-scrollbar) { width: 4px; }
 .aside :deep(.el-menu::-webkit-scrollbar-thumb) {
   background: rgba(255, 255, 255, 0.2);
   border-radius: 2px;
 }
-.aside :deep(.el-menu::-webkit-scrollbar-track) {
-  background: transparent;
+.aside :deep(.el-menu::-webkit-scrollbar-track) { background: transparent; }
+
+/* 移动端抽屉式侧边栏 */
+@media (max-width: 768px) {
+  .aside-mobile-drawer {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 2001;
+    box-shadow: 2px 0 12px rgba(0, 0, 0, 0.3);
+  }
+  .aside-mobile-hidden {
+    transform: translateX(-100%);
+    width: 220px !important;
+  }
+  .aside-mask {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 2000;
+  }
 }
-.header { display: flex; align-items: center; gap: 16px; background: #fff; border-bottom: 1px solid #e4e7ed; padding: 0 20px; height: 56px; }
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: var(--app-header-bg);
+  border-bottom: 1px solid var(--app-header-border);
+  padding: 0 20px;
+  height: 56px;
+}
 .collapse-btn { font-size: 20px; }
 .title { font-size: 18px; font-weight: 600; }
 .header-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
 .status-tag { display: flex; align-items: center; gap: 4px; }
 .user-name { color: #606266; }
-.main { background: #f5f7fa; padding: 20px; overflow-y: auto; }
+.main { background: var(--app-bg); padding: 20px; overflow-y: auto; }
+
+/* 移动端 header 紧凑化 */
+@media (max-width: 768px) {
+  .header { padding: 0 12px; gap: 8px; }
+  .title { font-size: 16px; }
+  .main { padding: 12px; }
+  .header-right { gap: 6px; }
+}
 </style>

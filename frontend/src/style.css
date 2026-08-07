@@ -1,3 +1,55 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body, #app { height: 100%; font-family: 'Helvetica Neue', Arial, sans-serif; }
-body { background: #f5f7fa; }
+
+/* ===== 主题 CSS 变量 ===== */
+:root {
+  --app-bg: #f5f7fa;
+  --app-aside-bg: #1d1e2c;
+  --app-aside-text: #a6a9b6;
+  --app-header-bg: #ffffff;
+  --app-header-border: #e4e7ed;
+  --app-loading-bg: rgba(255, 255, 255, 0.7);
+}
+
+html.dark {
+  --app-bg: #14161e;
+  --app-aside-bg: #0d0f17;
+  --app-aside-text: #909399;
+  --app-header-bg: #1d1f2c;
+  --app-header-border: #2d2f3c;
+  --app-loading-bg: rgba(20, 22, 30, 0.7);
+}
+
+body { background: var(--app-bg); }
+
+/* ===== 滚动条 ===== */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb {
+  background: rgba(144, 147, 153, 0.3);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(144, 147, 153, 0.5); }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ===== 响应式辅助类 ===== */
+.mobile-only { display: none !important; }
+@media (max-width: 768px) {
+  .mobile-only { display: flex !important; }
+  .desktop-only { display: none !important; }
+}
+
+/* 移动端触控优化：禁止双击放大、提升触摸响应 */
+@media (max-width: 768px) {
+  * {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+  }
+  input, select, textarea { font-size: 16px; } /* 防止 iOS 聚焦放大 */
+}
+
+/* ===== 触摸手势支持（K 线等图表） ===== */
+.touch-action-none { touch-action: none; }
+
+/* ===== 全局过渡 ===== */
+.fade-enter-active, .fade-leave-active { transition: opacity 0.2s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }

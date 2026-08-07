@@ -36,6 +36,44 @@ class DashboardViewSet(viewsets.ViewSet):
         return Response({'results': data})
 
     @action(detail=False, methods=['get'])
+    def correlation(self, request):
+        """相关性分析矩阵"""
+        symbols = request.query_params.get('symbols', 'BTC-USDT,ETH-USDT,SOL-USDT')
+        bar = request.query_params.get('bar', '1D')
+        limit = int(request.query_params.get('limit', 200))
+        data = StrategyService.correlation_matrix(
+            [s.strip() for s in symbols.split(',') if s.strip()],
+            bar=bar, limit=limit, user=request.user,
+        )
+        return Response(data)
+
+    @action(detail=False, methods=['get'])
+    def factor_ic(self, request):
+        """因子有效性统计（IC/IR）"""
+        strategy_id = request.query_params.get('strategy_id')
+        if not strategy_id:
+            return Response({'error': 'strategy_id 必填'}, status=400)
+        from apps.strategy.models import StrategyConfig
+        strategy = StrategyConfig.objects.filter(id=strategy_id, user=request.user).first()
+        if not strategy:
+            return Response({'error': '策略不存在'}, status=404)
+        data = StrategyService.factor_ic_analysis(
+            strategy, bar=request.query_params.get('bar', '1D'),
+            lookback=int(request.query_params.get('lookback', 100)), user=request.user,
+        )
+        return Response(data)
+
+    @action(detail=False, methods=['get'])
+    def market_state(self, request):
+        """市场状态分类"""
+        inst_id = request.query_params.get('inst_id', 'BTC-USDT')
+        data = StrategyService.market_state(
+            inst_id, bar=request.query_params.get('bar', '1D'),
+            lookback=int(request.query_params.get('lookback', 60)), user=request.user,
+        )
+        return Response(data)
+
+    @action(detail=False, methods=['get'])
     def net_value(self, request):
         """净值实时曲线（最近N天）"""
         days = int(request.query_params.get('days', 30))
