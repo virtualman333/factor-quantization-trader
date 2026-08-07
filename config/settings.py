@@ -7,7 +7,11 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 env = environ.Env()
-environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
+env_file = os.environ.get('ENV_FILE', os.path.join(BASE_DIR, '.env'))
+if os.path.exists(env_file):
+    environ.Env.read_env(env_file)
+
+ENVIRONMENT = env('DJANGO_ENVIRONMENT', default='development')
 
 SECRET_KEY = env('DJANGO_SECRET_KEY', default='dev-secret-key-change-in-production')
 DEBUG = env.bool('DJANGO_DEBUG', default=True)
@@ -35,6 +39,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
+    'core.middleware.RequestLogMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -196,3 +201,29 @@ RISK_CONFIG = {
     'DEFAULT_LEVERAGE': 3,
     'MIN_ORDER_INTERVAL': 1.0,  # seconds
 }
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+from config.logging_config import LOGGING  # noqa: E402
+
+# ── Sentry (optional) ────────────────────────────────────────────────────────
+SENTRY_DSN = env('SENTRY_DSN', default='')
+if SENTRY_DSN and not DEBUG:
+    import sentry_sdk
+    from sentry_sdk.integrations.django import DjangoIntegration
+    from sentry_sdk.integrations.celery import CeleryIntegration
+    from sentry_sdk.integrations.logging import LoggingIntegration
+    import logging as sentry_logging
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[
+            DjangoIntegration(),
+            CeleryIntegration(),
+            LoggingIntegration(
+                level=sentry_logging.INFO,
+                event_level=sentry_logging.ERROR,
+            ),
+        ],
+        environment=ENVIRONMENT,
+        traces_sample_rate=0.1 if ENVIRONMENT == 'production' else 1.0,
+        send_default_pii=False,
+    )
