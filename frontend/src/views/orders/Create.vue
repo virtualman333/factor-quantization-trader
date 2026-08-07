@@ -198,11 +198,25 @@ const form = reactive({
 })
 const submitting = ref(false)
 
+/** 清洗提交 payload：空字符串字段（除保留用）置 null，防止后端字段类型报错 */
+function cleanPayload(obj, keepEmptyKeys = ['px', 'pos_side']) {
+  const out = { ...obj }
+  for (const k of Object.keys(out)) {
+    if (keepEmptyKeys.includes(k)) continue
+    if (out[k] === '' || out[k] == null || out[k] === 0) {
+      if (k === 'strategy_id' || k === 'signal_id') {
+        out[k] = null
+      }
+    }
+  }
+  return out
+}
+
 const submit = async () => {
   if (!form.inst_id || !form.sz) { ElMessage.warning('请填写品种和数量'); return }
   submitting.value = true
   try {
-    await createOrder({ ...form })
+    await createOrder(cleanPayload(form))
     ElMessage.success('下单成功')
     reset()
   } catch (e) { ElMessage.error(e.message) }
@@ -220,7 +234,7 @@ const batchLoading = ref(false)
 const batchResult = ref(null)
 const addBatchRow = () => batchOrders.value.push({ inst_id: '', side: 'buy', sz: '' })
 const submitBatch = async () => {
-  const valid = batchOrders.value.filter(o => o.inst_id && o.sz)
+  const valid = batchOrders.value.filter(o => o.inst_id && o.sz).map(o => cleanPayload(o))
   if (!valid.length) { ElMessage.warning('请填写批量订单'); return }
   batchLoading.value = true
   try {
