@@ -10,6 +10,7 @@ export function pauseStrategy(id) { return api.post(`/strategy/configs/${id}/pau
 export function runSignals(id) { return api.post(`/strategy/configs/${id}/run_signals/`) }
 export function executeSignals(id) { return api.post(`/strategy/configs/${id}/execute_signals/`) }
 export function runBacktest(id, data) { return api.post(`/strategy/configs/${id}/backtest/`, data) }
+export function getBacktestTasks() { return api.get('/strategy/configs/backtest_tasks/') }
 export function runMonteCarlo(id, data) { return api.post(`/strategy/configs/${id}/monte_carlo/`, data) }
 export function runWalkForward(id, data) { return api.post(`/strategy/configs/${id}/walk_forward/`, data) }
 export function exportBacktestReport(id) { return api.get(`/strategy/configs/${id}/export_report/`, { responseType: 'blob' }) }

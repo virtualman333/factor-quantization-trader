@@ -162,26 +162,69 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def backtest(self, request, pk=None):
-        """运行回测"""
+        """运行回测（异步任务执行，返回 task_id 供查询进度）"""
         strategy = self.get_object()
         start_dt, end_dt = _parse_backtest_dates(request)
         try:
             fee_rate = float(request.data.get('fee_rate', 0.001))
             slippage = float(request.data.get('slippage', 0.001))
-            result = StrategyService.run_backtest(
-                strategy,
-                start_date=start_dt,
-                end_date=end_dt,
-                user=request.user,
+            from apps.strategy.tasks import run_backtest_task
+            task = run_backtest_task.delay(
+                strategy_id=strategy.id,
+                start_date=start_dt.isoformat(),
+                end_date=end_dt.isoformat(),
+                user_id=request.user.id if request.user.is_authenticated else None,
                 fee_rate=fee_rate,
                 slippage=slippage,
             )
-            serializer = BacktestResultSerializer(result)
-            return Response(serializer.data)
-        except StrategyError as e:
-            return Response({'error': str(e)}, status=400)
+            return Response({
+                'task_id': str(task.id),
+                'submitted': True,
+                'strategy_id': strategy.id,
+                'strategy_name': strategy.name,
+            }, status=202)
         except Exception as e:
             return Response({'error': str(e)}, status=500)
+
+    @action(detail=False, methods=['get'])
+    def backtest_tasks(self, request):
+        """获取当前用户最近的回测任务列表（含状态）"""
+        from datetime import timedelta
+        import json
+        from django.utils import timezone
+        from django_celery_results.models import TaskResult
+
+        since = timezone.now() - timedelta(hours=2)
+        rows = TaskResult.objects.filter(
+            task_name='apps.strategy.tasks.run_backtest_task',
+            date_created__gte=since,
+        ).order_by('-date_created')[:50]
+
+        results = []
+        for t in rows:
+            strategy_id = None
+            try:
+                kwargs = json.loads(t.task_kwargs or '{}')
+                strategy_id = kwargs.get('strategy_id')
+            except Exception:
+                pass
+
+            result_data = {}
+            if t.result:
+                try:
+                    result_data = json.loads(t.result)
+                except Exception:
+                    result_data = {'raw': t.result[:200]}
+
+            results.append({
+                'task_id': t.task_id,
+                'strategy_id': strategy_id,
+                'state': t.status,
+                'result': result_data,
+                'created_at': t.date_created.isoformat() if t.date_created else None,
+                'done_at': t.date_done.isoformat() if t.date_done else None,
+            })
+        return Response({'results': results})
 
     @action(detail=True, methods=['post'])
     def monte_carlo(self, request, pk=None):

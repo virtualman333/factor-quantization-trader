@@ -47,6 +47,54 @@ def execute_pending_signals():
     return executed
 
 
+@shared_task(bind=True, max_retries=0)
+def run_backtest_task(self, strategy_id: int, start_date: str = '',
+                      end_date: str = '', user_id: int = None,
+                      fee_rate: float = 0.001, slippage: float = 0.001):
+    """异步执行策略回测（回测耗时较长，放入后台队列执行）"""
+    from datetime import datetime
+    from django.utils import timezone
+
+    try:
+        strategy = StrategyConfig.objects.get(id=strategy_id)
+        user = User.objects.get(id=user_id) if user_id else strategy.user
+
+        def _parse(value, is_end=False):
+            if not value:
+                return None
+            try:
+                dt = datetime.fromisoformat(value)
+            except (ValueError, TypeError):
+                dt = None
+            if dt and timezone.is_naive(dt):
+                dt = timezone.make_aware(dt)
+            return dt
+
+        start_dt = _parse(start_date) or (timezone.now() - __import__('datetime').timedelta(days=30))
+        end_dt = _parse(end_date) or timezone.now()
+
+        result = StrategyService.run_backtest(
+            strategy,
+            start_date=start_dt,
+            end_date=end_dt,
+            user=user,
+            fee_rate=fee_rate,
+            slippage=slippage,
+        )
+        return {
+            'status': 'success',
+            'backtest_id': result.id,
+            'strategy_id': strategy_id,
+            'strategy_name': strategy.name,
+            'total_return': float(result.total_return),
+            'sharpe_ratio': float(result.sharpe_ratio or 0),
+            'total_trades': result.total_trades,
+        }
+    except Exception as e:
+        logger.error(f'Backtest task {strategy_id} failed: {e}')
+        return {'status': 'error', 'strategy_id': strategy_id, 'error': str(e)}
+
+
 @shared_task
 def run_active_strategies():
     """批量运行所有活跃策略（含放量跟随持仓监控出场），按用户分组隔离执行"""

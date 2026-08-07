@@ -56,6 +56,59 @@
       </el-form>
     </el-card>
 
+    <!-- 进行中的回测任务 -->
+    <el-card v-if="activeTasks.length" shadow="never" style="margin-top:16px">
+      <template #header>
+        <div class="tasks-header">
+          <span><el-icon style="margin-right:6px"><Loading /></el-icon>回测任务</span>
+          <el-tag size="small" type="warning">{{ activeTasks.length }} 个进行中</el-tag>
+        </div>
+      </template>
+      <el-table :data="activeTasks" size="small" border>
+        <el-table-column label="任务ID" width="110">
+          <template #default="{ row }">
+            <span class="task-id">{{ row.task_id.slice(0, 8) }}…</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="策略" min-width="130">
+          <template #default="{ row }">
+            {{ row.result?.strategy_name || row.strategy_name || `策略 #${row.strategy_id}` }}
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag size="small" :type="taskStateType(row.state)">
+              {{ taskStateLabel(row.state) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="进度" min-width="140">
+          <template #default="{ row }">
+            <el-progress
+              v-if="row.state === 'SUCCESS' || row.state === 'FAILURE'"
+              :percentage="100"
+              :status="row.state === 'SUCCESS' ? 'success' : 'exception'"
+            />
+            <el-progress v-else :percentage="loadingProgress" :indeterminate="true" :duration="1" :show-text="false" />
+          </template>
+        </el-table-column>
+        <el-table-column label="结果" min-width="180">
+          <template #default="{ row }">
+            <span v-if="row.state === 'SUCCESS'" style="color:#67c23a">
+              收益 {{ (row.result.total_return * 100).toFixed(2) }}% · 夏普 {{ row.result.sharpe_ratio?.toFixed(2) }} · {{ row.result.total_trades }}笔
+            </span>
+            <span v-else-if="row.state === 'FAILURE'" style="color:#f56c6c">
+              {{ row.result.error || '回测失败' }}
+            </span>
+            <span v-else style="color:#909399">执行中…</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="创建时间" width="160">
+          <template #default="{ row }">{{ row.created_at?.slice(0, 19).replace('T', ' ') }}</template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
     <el-table :data="tableData" v-loading="loading" border stripe style="margin-top:16px">
       <el-table-column prop="name" label="名称" width="150" />
       <el-table-column prop="strategy_type_display" label="策略类型" width="120" />
@@ -331,18 +384,19 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch, inject } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, inject } from 'vue'
 import {
   runSignals as runSignalsApi,
   executeSignals as execSignalsApi, runBacktest as runBacktestApi,
   optimizeParams as optimizeParamsApi, optimizeWeights as optimizeWeightsApi,
+  getBacktestTasks,
 } from '@/api/strategy'
 import { getInstruments as getMarketInstruments } from '@/api/market'
 import { useStrategyStore } from '@/stores/strategy'
 import { useConfirm } from '@/composables/useConfirm'
 import { useFormDraft } from '@/composables/useFormDraft'
 import { ElMessage } from 'element-plus'
-import { Plus, Search, RefreshLeft, Delete } from '@element-plus/icons-vue'
+import { Plus, Search, RefreshLeft, Delete, Loading } from '@element-plus/icons-vue'
 
 const strategyStore = useStrategyStore()
 const { confirm } = useConfirm()
@@ -395,6 +449,62 @@ const wtEnd = ref('')
 const wtIterations = ref(10)
 const wtLoading = ref(false)
 const wtResult = ref(null)
+
+// 回测任务（异步）
+const btTasks = ref([])
+const taskPollTimer = ref(null)
+const taskPolling = ref(false)
+
+const activeTasks = computed(() =>
+  btTasks.value.filter((t) => t.state === 'STARTED' || t.state === 'PENDING' || t.state === 'RECEIVED')
+)
+
+const taskStateLabel = (s) => ({
+  PENDING: '等待中', RECEIVED: '排队中', STARTED: '执行中',
+  SUCCESS: '完成', FAILURE: '失败',
+}[s] || s)
+
+const taskStateType = (s) => ({
+  PENDING: 'info', RECEIVED: 'warning', STARTED: 'warning',
+  SUCCESS: 'success', FAILURE: 'danger',
+}[s] || 'info')
+
+const loadingProgress = ref(60)
+const loadBtTasks = async () => {
+  try {
+    const res = await getBacktestTasks()
+    const rows = res.results || []
+    const prev = btTasks.value
+    // 合并策略名
+    for (const r of rows) {
+      const old = prev.find((p) => p.task_id === r.task_id)
+      if (old && !r.result?.strategy_name) r.strategy_name = old.strategy_name
+      if (!r.strategy_name && r.strategy_id) {
+        const s = tableData.value.find((x) => x.id === r.strategy_id)
+        if (s) r.strategy_name = s.name
+      }
+    }
+    btTasks.value = rows
+    // 有任务完成时刷新表格（回测结果可能变化）
+    if (prev.some((p) => p.state !== 'SUCCESS' && p.state !== 'FAILURE') &&
+        rows.every((r) => r.state === 'SUCCESS' || r.state === 'FAILURE')) {
+      load()
+    }
+  } catch { /* 轮询失败忽略 */ }
+}
+
+const startTaskPolling = () => {
+  stopTaskPolling()
+  loadBtTasks()
+  taskPollTimer.value = setInterval(loadBtTasks, 3000)
+}
+
+const stopTaskPolling = () => {
+  if (taskPollTimer.value) {
+    clearInterval(taskPollTimer.value)
+    taskPollTimer.value = null
+  }
+}
 
 // 筛选与分页
 const filters = ref({ keyword: '', strategy_type: '', inst_type: '', status: '', direction: '' })
@@ -605,17 +715,40 @@ const runBacktest = async () => {
   if (!btStart.value || !btEnd.value) { ElMessage.warning('请选择日期'); return }
   btLoading.value = true
   try {
-    await runBacktestApi(btStrategyId.value, {
+    const res = await runBacktestApi(btStrategyId.value, {
       start_date: btStart.value, end_date: btEnd.value,
       fee_rate: btFeeRate.value, slippage: btSlippage.value,
     })
-    ElMessage.success('回测已提交')
+    // 异步任务提交成功（202），加入任务列表并轮询
+    if (res.submitted) {
+      const strategy = tableData.value.find((x) => x.id === btStrategyId.value)
+      btTasks.value.unshift({
+        task_id: res.task_id,
+        strategy_id: res.strategy_id,
+        strategy_name: strategy?.name || res.strategy_name,
+        state: 'PENDING',
+        result: {},
+        created_at: new Date().toISOString(),
+      })
+      ElMessage.success('回测任务已提交，正在后台执行…')
+      startTaskPolling()
+    } else {
+      ElMessage.success('回测完成')
+    }
     backtestVisible.value = false
   } catch (e) { ElMessage.error(e.message) }
   btLoading.value = false
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  // 恢复进行中的回测任务轮询
+  loadBtTasks().then(() => {
+    if (activeTasks.value.length) startTaskPolling()
+  })
+})
+
+onBeforeUnmount(stopTaskPolling)
 </script>
 
 <style scoped>
@@ -626,6 +759,8 @@ onMounted(load)
 .filter-bar :deep(.el-card__body) { padding: 16px 16px 0; }
 .pager { margin-top: 16px; justify-content: flex-end; display: flex; }
 .hint { color: #909399; font-size: 12px; margin-left: 8px; }
+.tasks-header { display: flex; align-items: center; justify-content: space-between; }
+.task-id { font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; color: #909399; }
 .grid-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; width: 100%; }
 .wt-result { margin-top: 16px; padding: 12px; background: #f5f7fa; border-radius: 6px; }
 </style>
