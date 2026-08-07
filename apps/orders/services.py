@@ -23,13 +23,30 @@ class OrderService:
     """订单管理服务"""
 
     @staticmethod
+    def _normalize_int(value):
+        """整型字段归一化：空串/None/0 -> None；合法数字转 int，非法抛 ValueError"""
+        if value is None or value == '' or value == 0:
+            return None
+        # 允许字符串或数字
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            return None
+        if n <= 0:
+            return None
+        return n
+
+    @staticmethod
     def create_order(inst_id: str, side: str, ord_type: str, sz: str,
                      px: str = '', td_mode: str = 'cash',
                      pos_side: str = '', leverage: float = 1,
                      source: str = 'manual',
-                     strategy_id: int = None, signal_id: int = None,
+                     strategy_id=None, signal_id=None,
                      user=None) -> Dict:
         """创建并提交订单（支持合约杠杆）"""
+        # 类型归一化：把 strategy_id / signal_id 的空字符串 / None 统一为 None，避免 IntegerField 报错
+        strategy_id = OrderService._normalize_int(strategy_id)
+        signal_id = OrderService._normalize_int(signal_id)
         user_id = user.id if user and user.is_authenticated else 0
         risk_mgr = RiskManager(user_id=user_id)
         order_value = float(sz) * (float(px) if px else 0)

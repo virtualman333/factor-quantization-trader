@@ -47,6 +47,17 @@ class TradeOrderViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return TradeOrder.objects.filter(user=self.request.user)
 
+    @staticmethod
+    def _clean_int(value, default=None):
+        """整型外键字段清洗：空字符串 / None / 非法 / <=0 统一为 None"""
+        if value is None or value == '' or value == 0:
+            return default
+        try:
+            n = int(value)
+            return n if n > 0 else default
+        except (TypeError, ValueError):
+            return default
+
     def create(self, request, *args, **kwargs):
         """提交新订单"""
         try:
@@ -58,8 +69,8 @@ class TradeOrderViewSet(viewsets.ModelViewSet):
                 px=request.data.get('px', ''),
                 td_mode=request.data.get('td_mode', 'cash'),
                 source=request.data.get('source', 'api'),
-                strategy_id=request.data.get('strategy_id'),
-                signal_id=request.data.get('signal_id'),
+                strategy_id=self._clean_int(request.data.get('strategy_id')),
+                signal_id=self._clean_int(request.data.get('signal_id')),
                 user=request.user,
             )
             return Response(result, status=201)
