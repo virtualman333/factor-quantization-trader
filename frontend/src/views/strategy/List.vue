@@ -4,6 +4,41 @@
       <h2>策略管理</h2>
       <el-button type="primary" :icon="Plus" @click="openDialog(null)">新建策略</el-button>
     </div>
+
+    <!-- 筛选栏 -->
+    <el-card shadow="never" class="filter-bar">
+      <el-form :inline="true" @submit.prevent>
+        <el-form-item label="名称">
+          <el-input v-model="filters.keyword" placeholder="策略名称模糊搜索" clearable @keyup.enter="onSearch" @clear="onSearch" style="width:180px" />
+        </el-form-item>
+        <el-form-item label="策略类型">
+          <el-select v-model="filters.strategy_type" placeholder="全部" clearable @change="onSearch" style="width:140px">
+            <el-option v-for="o in STRATEGY_TYPE_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="品种类型">
+          <el-select v-model="filters.inst_type" placeholder="全部" clearable @change="onSearch" style="width:120px">
+            <el-option label="现货" value="SPOT" />
+            <el-option label="永续合约" value="SWAP" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-select v-model="filters.status" placeholder="全部" clearable @change="onSearch" style="width:120px">
+            <el-option v-for="o in STATUS_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="方向">
+          <el-select v-model="filters.direction" placeholder="全部" clearable @change="onSearch" style="width:120px">
+            <el-option v-for="o in DIRECTION_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" :icon="Search" @click="onSearch">查询</el-button>
+          <el-button :icon="RefreshLeft" @click="onReset">重置</el-button>
+        </el-form-item>
+      </el-form>
+    </el-card>
+
     <el-table :data="tableData" v-loading="loading" border stripe style="margin-top:16px">
       <el-table-column prop="name" label="名称" width="150" />
       <el-table-column prop="strategy_type_display" label="策略类型" width="120" />
@@ -34,6 +69,18 @@
         </template>
       </el-table-column>
     </el-table>
+
+    <el-pagination
+      class="pager"
+      background
+      layout="total, sizes, prev, pager, next, jumper"
+      :total="total"
+      :page-size="pageSize"
+      :current-page="page"
+      :page-sizes="[10, 20, 50, 100]"
+      @size-change="(s) => { pageSize = s; page = 1; load() }"
+      @current-change="(p) => { page = p; load() }"
+    />
 
     <!-- 编辑/新建弹窗 -->
     <el-dialog v-model="dialogVisible" :title="form.id ? '编辑策略' : '新建策略'" width="600px">
@@ -195,6 +242,24 @@ import {
   getInstruments,
 } from '@/api/strategy'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Plus, Search, RefreshLeft } from '@element-plus/icons-vue'
+
+const STRATEGY_TYPE_OPTIONS = [
+  { label: '因子综合评分', value: 'factor_composite' },
+  { label: '趋势跟踪', value: 'trend_follow' },
+  { label: '放量跟随', value: 'volume_breakout' },
+]
+const STATUS_OPTIONS = [
+  { label: '草稿', value: 'draft' },
+  { label: '运行中', value: 'active' },
+  { label: '已暂停', value: 'paused' },
+  { label: '已停止', value: 'stopped' },
+]
+const DIRECTION_OPTIONS = [
+  { label: '只做多', value: 'long' },
+  { label: '只做空', value: 'short' },
+  { label: '多空双向', value: 'both' },
+]
 
 const tableData = ref([])
 const loading = ref(false)
@@ -204,6 +269,12 @@ const btLoading = ref(false)
 const btStart = ref('')
 const btEnd = ref('')
 const btStrategyId = ref(null)
+
+// 筛选与分页
+const filters = ref({ keyword: '', strategy_type: '', inst_type: '', status: '', direction: '' })
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(10)
 
 const form = ref({})
 const factorsStr = ref('')
@@ -254,10 +325,23 @@ watch(() => form.value.inst_type, (val) => {
 const load = async () => {
   loading.value = true
   try {
-    const res = await getStrategies()
+    const params = {
+      page: page.value,
+      page_size: pageSize.value,
+      ...Object.fromEntries(Object.entries(filters.value).filter(([, v]) => v !== '' && v != null)),
+    }
+    const res = await getStrategies(params)
     tableData.value = res.results || res
+    total.value = res.count ?? (res.results || res).length
   } catch (e) { ElMessage.error(e.message) }
   loading.value = false
+}
+
+const onSearch = () => { page.value = 1; load() }
+const onReset = () => {
+  filters.value = { keyword: '', strategy_type: '', inst_type: '', status: '', direction: '' }
+  page.value = 1
+  load()
 }
 
 const openDialog = (row) => {
@@ -323,5 +407,8 @@ onMounted(load)
 
 <style scoped>
 .page-header { display: flex; justify-content: space-between; align-items: center; }
+.filter-bar { margin-top: 16px; }
+.filter-bar :deep(.el-card__body) { padding: 16px 16px 0; }
+.pager { margin-top: 16px; justify-content: flex-end; display: flex; }
 .hint { color: #909399; font-size: 12px; margin-left: 8px; }
 </style>

@@ -3,6 +3,14 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.pagination import PageNumberPagination
+
+
+class KLinePagination(PageNumberPagination):
+    """K线接口默认返回更多数据以支撑图表展示"""
+    page_size = 300
+    page_size_query_param = 'page_size'
+    max_page_size = 1000
 
 from apps.market.models import Instrument, KLine, Ticker, FundingRate
 from apps.market.serializers import (
@@ -31,6 +39,7 @@ class KLineViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = KLine.objects.all()
     serializer_class = KLineSerializer
     filterset_fields = ['instrument__inst_id', 'bar']
+    pagination_class = KLinePagination
 
     @action(detail=False, methods=['post'])
     def fetch(self, request):

@@ -21,6 +21,19 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
     queryset = StrategyConfig.objects.all()
     serializer_class = StrategyConfigSerializer
 
+    def get_queryset(self):
+        """支持列表筛选：keyword(名称模糊)、strategy_type、inst_type、status、direction"""
+        qs = super().get_queryset()
+        params = self.request.query_params
+        keyword = params.get('keyword')
+        if keyword:
+            qs = qs.filter(name__icontains=keyword.strip())
+        for field in ('strategy_type', 'inst_type', 'status', 'direction'):
+            val = params.get(field)
+            if val:
+                qs = qs.filter(**{field: val})
+        return qs
+
     @action(detail=False, methods=['get'])
     def instruments(self, request):
         """获取 OKX 交易产品列表（支持下拉选交易对）"""

@@ -11,48 +11,66 @@
         <el-button :icon="Refresh" @click="load" style="margin-left:8px">刷新</el-button>
       </div>
     </div>
-    <el-table :data="tableData" v-loading="loading" border stripe style="margin-top:16px">
-      <el-table-column prop="inst_id" label="品种" width="130" />
-      <el-table-column prop="bar_display" label="周期" width="80" />
-      <el-table-column prop="timestamp" label="时间" width="170" />
-      <el-table-column prop="open" label="开" width="120" />
-      <el-table-column prop="high" label="高" width="120" />
-      <el-table-column prop="low" label="低" width="120" />
-      <el-table-column prop="close" label="收" width="120">
-        <template #default="{ row }">
-          <span :style="{ color: row.close >= row.open ? '#67c23a' : '#f56c6c' }">{{ row.close }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column prop="vol" label="成交量" width="120" />
-    </el-table>
-    <div class="pagination">
-      <el-pagination v-model:current-page="page" :page-size="50" :total="total" layout="prev, pager, next, total" @current-change="load" />
-    </div>
+    <el-card v-loading="loading" style="margin-top:16px">
+      <div ref="chartRef" style="width:100%;height:640px"></div>
+    </el-card>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { getKlines, fetchKlines as fetchApi } from '@/api/market'
 import { ElMessage } from 'element-plus'
+import { init, dispose } from 'klinecharts'
+import dayjs from 'dayjs'
 
-const tableData = ref([])
+const chartRef = ref(null)
 const loading = ref(false)
-const page = ref(1)
-const total = ref(0)
 const instId = ref('BTC-USDT')
 const bar = ref('1H')
-const bars = ['1m', '5m', '15m', '30m', '1H', '4H', '1D', '1W', '1M']
+const bars = ['1m', '3m', '5m', '15m', '30m', '1H', '2H', '4H', '6H', '12H', '1D', '1W', '1M']
+
+let chart = null
+
+const initChart = () => {
+  if (!chartRef.value) return
+  chart = init(chartRef.value, {
+    styles: {
+      grid: { horizontal: { color: '#f0f0f0' }, vertical: { color: '#f0f0f0' } },
+      candle: {
+        bar: { upColor: '#67c23a', downColor: '#f56c6c', noChangeColor: '#999' },
+        priceMark: { last: { text: { backgroundColor: '#409eff' } } },
+      },
+      indicator: { lastValueMark: { text: { backgroundColor: '#409eff' } } },
+    },
+  })
+}
+
+const renderChart = (list) => {
+  if (!chart) return
+  // klinecharts 要求数据按时间升序，且时间戳为毫秒
+  const data = [...list]
+    .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+    .map(d => ({
+      timestamp: new Date(d.timestamp).getTime(),
+      open: parseFloat(d.open),
+      high: parseFloat(d.high),
+      low: parseFloat(d.low),
+      close: parseFloat(d.close),
+      volume: parseFloat(d.vol) || 0,
+    }))
+  chart.applyNewData(data)
+}
 
 const load = async () => {
   loading.value = true
   try {
-    const params = { page: page.value }
+    const params = { page: 1 }
     if (instId.value) params.instrument__inst_id = instId.value
     if (bar.value) params.bar = bar.value
     const res = await getKlines(params)
-    tableData.value = res.results || res
-    total.value = res.count || 0
+    const list = res.results || res
+    renderChart(list)
   } catch (e) { ElMessage.error(e.message) }
   loading.value = false
 }
@@ -68,11 +86,18 @@ const fetchKlines = async () => {
   loading.value = false
 }
 
-onMounted(load)
+onMounted(async () => {
+  await nextTick()
+  initChart()
+  await load()
+})
+
+onBeforeUnmount(() => {
+  if (chart) { dispose(chart); chart = null }
+})
 </script>
 
 <style scoped>
 .page-header { display: flex; justify-content: space-between; align-items: center; }
 .header-right { display: flex; align-items: center; }
-.pagination { margin-top: 16px; display: flex; justify-content: flex-end; }
 </style>
