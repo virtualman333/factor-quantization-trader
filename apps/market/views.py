@@ -186,6 +186,16 @@ class TickerViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = TickerSerializer
     filterset_fields = ['instrument__inst_id', 'instrument__inst_type']
 
+    def get_queryset(self):
+        """支持 inst_ids 逗号分隔批量查询多个品种（用于自选品种统计）"""
+        qs = Ticker.objects.all()
+        inst_ids = self.request.query_params.get('inst_ids', '')
+        if inst_ids:
+            ids = [i.strip() for i in inst_ids.split(',') if i.strip()]
+            if ids:
+                qs = qs.filter(instrument__inst_id__in=ids)
+        return qs
+
     @action(detail=False, methods=['post'])
     def refresh(self, request):
         """手动刷新行情"""
