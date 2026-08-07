@@ -57,6 +57,12 @@ const routes = [
         meta: { title: '净值曲线', icon: 'DataAnalysis' },
       },
       {
+        path: 'account/analysis',
+        name: 'AccountAnalysis',
+        component: () => import('@/views/account/Analysis.vue'),
+        meta: { title: '账户分析', icon: 'TrendCharts' },
+      },
+      {
         path: 'strategy/list',
         name: 'StrategyList',
         component: () => import('@/views/strategy/List.vue'),

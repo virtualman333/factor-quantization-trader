@@ -84,6 +84,27 @@ class OKXCredentialViewSet(viewsets.ModelViewSet):
         reset_okx_client(user_id=self.request.user.id)
 
     @action(detail=False, methods=['get'])
+    def pnl_report(self, request):
+        """盈亏分析报表（日/周/月聚合）"""
+        period = request.query_params.get('period', 'month')
+        data = AccountService.pnl_report(user=request.user, period=period)
+        return Response(data)
+
+    @action(detail=False, methods=['get'])
+    def fee_statistics(self, request):
+        """手续费统计"""
+        days = int(request.query_params.get('days', 30))
+        data = AccountService.fee_statistics(user=request.user, days=days)
+        return Response(data)
+
+    @action(detail=False, methods=['get'])
+    def equity_benchmark(self, request):
+        """资金曲线与 BTC 基准对比"""
+        days = int(request.query_params.get('days', 30))
+        data = AccountService.equity_vs_benchmark(user=request.user, days=days)
+        return Response(data)
+
+    @action(detail=False, methods=['get'])
     def active(self, request):
         """获取当前环境对应的凭证"""
         credential = get_active_credential(request.user)
