@@ -412,12 +412,20 @@ const fetchHistory = async () => {
       limit: 1000,
       is_history: true,
     })
-    ElMessage.success(`已从 OKX 拉取 ${res.data?.count || ''} 条数据并存入数据库`)
-    recreateChart()
+    if (res.submitted) {
+      ElMessage.success('已提交后台拉取任务，稍后点击「刷新」查看最新K线')
+    } else {
+      ElMessage.success(`已从 OKX 拉取 ${res.count || ''} 条数据并存入数据库`)
+    }
+    // 等待后台写入部分数据后重载图表
+    setTimeout(() => {
+      recreateChart()
+      fetchLoading.value = false
+    }, 2000)
   } catch (e) {
     ElMessage.error(`拉取失败: ${e.message}`)
+    fetchLoading.value = false
   }
-  fetchLoading.value = false
 }
 
 // ---------- 刷新（重建图表） ----------

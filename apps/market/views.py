@@ -68,7 +68,7 @@ class KLineViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['post'])
     def fetch(self, request):
-        """手动拉取K线（支持翻页拉取更多历史数据）"""
+        """手动拉取K线（后台异步执行，避免长耗时阻塞请求导致前端30s超时）"""
         inst_id = request.data.get('inst_id')
         bar = request.data.get('bar', '1H')
         limit = request.data.get('limit', 300)
@@ -77,11 +77,28 @@ class KLineViewSet(viewsets.ReadOnlyModelViewSet):
         if not inst_id:
             return Response({'error': 'inst_id is required'}, status=400)
 
-        count = MarketDataService.fetch_klines_history(
-            inst_id=inst_id, bar=bar, total=int(limit), user=request.user
-        )
-        env = MarketDataService._get_current_env(user=request.user)
-        return Response({'count': count, 'inst_id': inst_id, 'bar': bar, 'environment': env})
+        try:
+            # 优先提交 Celery 异步任务（OKX API + 数据库写入较耗时）
+            from apps.market.tasks import async_fetch_klines_task
+            task = async_fetch_klines_task.delay(
+                inst_id=inst_id, bar=bar, total=int(limit)
+            )
+            env = MarketDataService._get_current_env(user=request.user)
+            return Response({
+                'task_id': str(task.id),
+                'count': 0,
+                'inst_id': inst_id,
+                'bar': bar,
+                'environment': env,
+                'submitted': True,
+            })
+        except Exception:
+            # Celery 不可用时回退为同步执行（小批量）
+            count = MarketDataService.fetch_klines_history(
+                inst_id=inst_id, bar=bar, total=int(limit), user=request.user
+            )
+            env = MarketDataService._get_current_env(user=request.user)
+            return Response({'count': count, 'inst_id': inst_id, 'bar': bar, 'environment': env})
 
     @action(detail=False, methods=['get'])
     def scroll(self, request):
