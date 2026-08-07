@@ -43,11 +43,13 @@ def execute_pending_signals():
 
 @shared_task
 def run_active_strategies():
-    """批量运行所有活跃策略"""
+    """批量运行所有活跃策略（含放量跟随持仓监控出场）"""
     active = StrategyConfig.objects.filter(status='active')
     results = {}
     for s in active:
         try:
+            # 先监控持仓出场（硬止损/止盈/移动止盈），再生成新信号
+            StrategyService.monitor_positions_for_strategy(s)
             signals = StrategyService.generate_signals(s)
             results[s.name] = len(signals)
         except Exception as e:

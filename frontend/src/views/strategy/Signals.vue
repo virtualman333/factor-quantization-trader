@@ -38,6 +38,8 @@
       <el-table-column prop="td_mode" label="保证金模式" width="110" />
       <el-table-column prop="leverage" label="杠杆" width="80" />
       <el-table-column prop="price" label="价格" width="120" />
+      <el-table-column prop="stop_loss_price" label="止损价" width="110" />
+      <el-table-column prop="take_profit_price" label="止盈价" width="110" />
       <el-table-column prop="reason" label="原因" min-width="200" show-overflow-tooltip />
       <el-table-column prop="is_executed" label="已执行" width="80">
 

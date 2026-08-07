@@ -37,7 +37,35 @@ class StrategyService:
         """为策略的所有标的生成交易信号"""
         if strategy.strategy_type == 'trend_follow':
             return StrategyService._generate_trend_signals(strategy)
+        if strategy.strategy_type == 'volume_breakout':
+            return StrategyService._generate_volume_breakout_signals(strategy)
         return StrategyService._generate_factor_signals(strategy)
+
+    # ========== 放量跟随策略参数 ==========
+    DEFAULT_VOLUME_PARAMS = {
+        'vol_ma_len': 20,          # 成交量均线周期
+        'vol_ratio': 1.8,          # 放量倍数阈值
+        'trend_ma_len': 60,        # 趋势均线(震荡过滤)周期
+        'atr_len': 14,             # ATR 周期
+        'min_atr_factor': 0.0015,  # 最小波动阈值(占价格比例)
+        'cooling_min': 3,          # 同方向信号冷却(分钟)
+        'stop_loss_mul': 1.2,      # 止损 = 1.2 × entry_atr
+        'tp_mode': 'fixed',        # fixed=固定盈亏比 / trailing=移动止盈
+        'tp_ratio': 1.5,           # 固定止盈盈亏比
+        'trailing_trigger': 0.5,   # 盈利达 0.5×止损距离 启动移动止盈
+        'trailing_factor': 0.8,    # 追踪幅度 = 0.8 × entry_atr
+        'enhanced_no_single_pulse': False,  # 增强1：拒绝单根脉冲K
+        'risk_per_trade': 0.01,    # 单笔风险比例(账户0.5%~1%)
+        'daily_max_stop': 3,       # 单日连续止损次数上限
+    }
+
+    @staticmethod
+    def _vb_param(strategy, key, default=None):
+        """读取放量跟随策略参数，策略 params 优先，其次默认表"""
+        val = (strategy.params or {}).get(key, StrategyService.DEFAULT_VOLUME_PARAMS.get(key, default))
+        if val is None:
+            return default
+        return val
 
     @staticmethod
     def _generate_factor_signals(strategy: StrategyConfig) -> List[SignalRecord]:
@@ -219,6 +247,203 @@ class StrategyService:
             return signal
         return signal
 
+    # ========== 放量跟随策略信号 ==========
+    @staticmethod
+    def _generate_volume_breakout_signals(strategy: StrategyConfig) -> List[SignalRecord]:
+        """放量跟随策略：放量上涨做多 / 放量下跌做空 + 趋势过滤 + ATR过滤 + 冷却 + 强制反向平仓
+
+        适用 ETH/USDT 1min，现货/合约均可。
+        """
+        from django.db.models import Sum
+        from apps.strategy.models import TrackedPosition
+        from datetime import timedelta
+
+        signals = []
+        client = get_okx_client()
+
+        vol_ma_len = int(StrategyService._vb_param(strategy, 'vol_ma_len', 20))
+        vol_ratio = float(StrategyService._vb_param(strategy, 'vol_ratio', 1.8))
+        trend_ma_len = int(StrategyService._vb_param(strategy, 'trend_ma_len', 60))
+        atr_len = int(StrategyService._vb_param(strategy, 'atr_len', 14))
+        min_atr_factor = float(StrategyService._vb_param(strategy, 'min_atr_factor', 0.0015))
+        cooling_min = int(StrategyService._vb_param(strategy, 'cooling_min', 3))
+        stop_loss_mul = float(StrategyService._vb_param(strategy, 'stop_loss_mul', 1.2))
+        tp_mode = StrategyService._vb_param(strategy, 'tp_mode', 'fixed')
+        tp_ratio = float(StrategyService._vb_param(strategy, 'tp_ratio', 1.5))
+        enhanced1 = bool(StrategyService._vb_param(strategy, 'enhanced_no_single_pulse', False))
+        daily_max_stop = int(StrategyService._vb_param(strategy, 'daily_max_stop', 3))
+
+        # 当前 OKX 持仓（判断多/空方向）
+        positions = {}
+        try:
+            pos_resp = client.get_positions(inst_type=strategy.inst_type)
+            if pos_resp.get('code') == '0':
+                for p in pos_resp.get('data', []):
+                    if float(p.get('pos', 0)) != 0:
+                        positions[p['instId']] = p
+        except Exception as e:
+            logger.warning(f'获取持仓失败: {e}')
+
+        # 当日止损停止：策略级当日累计止损次数达上限则当日不再开仓
+        today = timezone.now().date()
+        stop_sum = TrackedPosition.objects.filter(
+            strategy=strategy, daily_stop_date=today
+        ).aggregate(total=Sum('daily_stop_count'))['total'] or 0
+        stop_halted = stop_sum >= daily_max_stop
+
+        kline_limit = max(vol_ma_len, trend_ma_len) + atr_len + 10
+
+        for symbol in strategy.symbols:
+            try:
+                market_service = MarketDataService()
+                market_service.fetch_klines(inst_id=symbol, bar=strategy.bar, limit=kline_limit)
+                df = market_service.get_klines_df(inst_id=symbol, bar=strategy.bar, limit=kline_limit)
+                if len(df) < trend_ma_len + atr_len:
+                    logger.warning(f'{symbol} K线不足，跳过')
+                    continue
+
+                close = df['close'].astype(float)
+                high = df['high'].astype(float)
+                low = df['low'].astype(float)
+                vol = df['volume'].astype(float)
+                op = df['open'].astype(float)
+
+                vol_ma = vol.rolling(vol_ma_len).mean()
+                ma_trend = close.rolling(trend_ma_len).mean()
+                atr_series = StrategyService._calculate_atr(df, atr_len)
+
+                cur_vol = float(vol.iloc[-1])
+                cur_vol_ma = float(vol_ma.iloc[-1])
+                prev_vol = float(vol.iloc[-2])
+                cur_atr = float(atr_series.iloc[-1]) if not pd.isna(atr_series.iloc[-1]) else 0.0
+                cur_close = float(close.iloc[-1])
+                prev_close = float(close.iloc[-2])
+                cur_open = float(op.iloc[-1])
+                cur_ma = float(ma_trend.iloc[-1])
+
+                # 放量条件
+                is_burst = cur_vol_ma > 0 and cur_vol > cur_vol_ma * vol_ratio
+
+                # 增强条件1：前一根成交量 ≥ VOL_MA × 1.2
+                prev_burst_ok = True
+                if enhanced1:
+                    prev_burst_ok = prev_vol >= cur_vol_ma * 1.2
+
+                # K线方向：阳线+收盘创新高 / 阴线+收盘创新低
+                is_bull_k = (cur_close > cur_open) and (cur_close > prev_close)
+                is_bear_k = (cur_close < cur_open) and (cur_close < prev_close)
+
+                bull_signal = is_burst and is_bull_k and prev_burst_ok
+                bear_signal = is_burst and is_bear_k and prev_burst_ok
+
+                # ATR 过滤（震荡屏蔽）
+                atr_ok = cur_atr > 0 and cur_atr > min_atr_factor * cur_close
+
+                # 趋势方向过滤（顺着 MA60 大方向）
+                above_ma = cur_close > cur_ma
+                below_ma = cur_close < cur_ma
+
+                # 当前持仓方向（OKX）
+                cur_pos = positions.get(symbol, {})
+                pos_side = cur_pos.get('posSide', '')
+                has_long = pos_side == 'long' and float(cur_pos.get('pos', 0)) != 0
+                has_short = pos_side == 'short' and float(cur_pos.get('pos', 0)) != 0
+
+                # 冷却：距上次同向开仓信号≥cooling_min分钟
+                last_buy = SignalRecord.objects.filter(
+                    strategy=strategy, inst_id=symbol, signal='buy'
+                ).order_by('-created_at').first()
+                last_sell = SignalRecord.objects.filter(
+                    strategy=strategy, inst_id=symbol, signal='sell'
+                ).order_by('-created_at').first()
+                cooling_long_ok = (last_buy is None or
+                                   (timezone.now() - last_buy.created_at) >= timedelta(minutes=cooling_min))
+                cooling_short_ok = (last_sell is None or
+                                    (timezone.now() - last_sell.created_at) >= timedelta(minutes=cooling_min))
+
+                # 决策
+                signal_type = 'hold'
+                reason = ''
+                if has_long:
+                    if bear_signal:
+                        signal_type = 'close_long'
+                        reason = '持有多仓 + 触发标准空头放量信号 -> 强制平多(主力出逃)'
+                    else:
+                        reason = '持有多仓，等待出场'
+                elif has_short:
+                    if bull_signal:
+                        signal_type = 'close_short'
+                        reason = '持有空仓 + 触发标准多头放量信号 -> 强制平空(主力出逃)'
+                    else:
+                        reason = '持有空仓，等待出场'
+                else:
+                    if stop_halted:
+                        reason = f'当日止损已达上限({daily_max_stop}笔)，停止开仓'
+                    elif bull_signal and above_ma and atr_ok and cooling_long_ok:
+                        signal_type = 'buy'
+                        reason = f'放量上涨+顺势(价>MA{trend_ma_len})+ATR过滤+冷却OK'
+                    elif bear_signal and below_ma and atr_ok and cooling_short_ok:
+                        signal_type = 'sell'
+                        reason = f'放量下跌+顺势(价<MA{trend_ma_len})+ATR过滤+冷却OK'
+                    else:
+                        bits = []
+                        if not (bull_signal or bear_signal):
+                            bits.append('无放量同向K')
+                        if not atr_ok:
+                            bits.append('ATR过小/震荡屏蔽')
+                        if not (above_ma or below_ma):
+                            bits.append('价格缠绕MA')
+                        reason = ';'.join(bits) or '条件不满足'
+
+                if signal_type == 'hold':
+                    continue
+
+                # 计算入场止损/止盈价
+                stop_loss_price = take_profit_price = None
+                if signal_type in ('buy', 'sell'):
+                    if signal_type == 'buy':
+                        sl = cur_close - stop_loss_mul * cur_atr
+                        tp = (cur_close + tp_ratio * (cur_close - sl)) if tp_mode == 'fixed' else None
+                    else:
+                        sl = cur_close + stop_loss_mul * cur_atr
+                        tp = (cur_close - tp_ratio * (sl - cur_close)) if tp_mode == 'fixed' else None
+                    stop_loss_price = round(sl, 8)
+                    take_profit_price = round(tp, 8) if tp else None
+
+                sig = SignalRecord.objects.create(
+                    strategy=strategy,
+                    inst_id=symbol,
+                    signal=signal_type,
+                    pos_side=StrategyService._infer_pos_side(signal_type),
+                    td_mode=strategy.td_mode,
+                    leverage=strategy.leverage,
+                    score=Decimal('0.8'),
+                    factors_detail={
+                        'vol': round(cur_vol, 2),
+                        'vol_ma': round(cur_vol_ma, 2),
+                        'close': round(cur_close, 4),
+                        'ma': round(cur_ma, 4),
+                        'atr': round(cur_atr, 8),
+                        'bull_signal': bull_signal,
+                        'bear_signal': bear_signal,
+                        'atr_ok': atr_ok,
+                        'above_ma': above_ma,
+                    },
+                    price=Decimal(str(round(cur_close, 8))),
+                    reason=reason,
+                    stop_loss_price=Decimal(str(stop_loss_price)) if stop_loss_price else None,
+                    take_profit_price=Decimal(str(take_profit_price)) if take_profit_price else None,
+                    entry_atr=Decimal(str(round(cur_atr, 8))) if cur_atr else None,
+                    tp_mode=tp_mode,
+                )
+                signals.append(sig)
+
+            except Exception as e:
+                logger.error(f'{symbol} 放量跟随信号生成异常: {e}')
+
+        logger.info(f'策略 [{strategy.name}] 生成 {len(signals)} 个放量跟随信号')
+        return signals
+
     # ========== 信号执行 ==========
     @staticmethod
     def execute_signal(signal: SignalRecord) -> Optional[Dict]:
@@ -252,19 +477,34 @@ class StrategyService:
         usdt_detail = next((d for d in details if d['ccy'] == 'USDT'), None)
         available_usd = float(usdt_detail.get('availBal', 0)) if usdt_detail else 0
 
-        # 合约模式下按杠杆放大名义价值
-        order_value = available_usd * float(strategy.order_size_pct) * leverage
-        order_value = min(order_value, available_usd * leverage)
-
-        if order_value <= 0:
-            logger.warning(f'可用余额不足: {available_usd}')
-            return None
-
         current_price = float(signal.price) if signal.price else 0
         if current_price <= 0:
             ticker = client.get_ticker(signal.inst_id)
             if ticker['code'] == '0' and ticker['data']:
                 current_price = float(ticker['data'][0]['last'])
+
+        # 仓位大小
+        if (strategy.strategy_type == 'volume_breakout'
+                and signal.signal in ('buy', 'sell') and signal.stop_loss_price is not None):
+            # 风险公式：仓位 = 账户资金 × 风险比例 ÷ (入场价与止损价价差)
+            risk_pct = float(StrategyService._vb_param(strategy, 'risk_per_trade', 0.01))
+            sl_price = float(signal.stop_loss_price)
+            sl_dist = abs(current_price - sl_price)
+            if sl_dist <= 0:
+                logger.warning(f'信号 #{signal.id} 止损距离为0，跳过')
+                return None
+            risk_amount = available_usd * risk_pct
+            order_value = risk_amount / sl_dist * current_price  # 名义价值
+            # 合约保证金保护：名义价值不超过 可用×杠杆
+            if td_mode != 'cash':
+                order_value = min(order_value, available_usd * leverage * current_price)
+        else:
+            order_value = available_usd * float(strategy.order_size_pct) * leverage
+            order_value = min(order_value, available_usd * leverage)
+
+        if order_value <= 0:
+            logger.warning(f'可用余额不足: {available_usd}')
+            return None
 
         sz = str(round(order_value / current_price, 6)) if current_price > 0 else '0'
 
@@ -287,6 +527,8 @@ class StrategyService:
                 signal.is_executed = True
                 signal.save(update_fields=['is_executed'])
                 logger.info(f'信号 #{signal.id} 执行成功: {signal.inst_id} {signal.signal} td_mode={td_mode} leverage={leverage}')
+                # 放量跟随：维护持仓跟踪
+                StrategyService._sync_tracked_position_after_exec(signal, strategy, td_mode)
                 return result
 
         except Exception as e:
@@ -305,6 +547,180 @@ class StrategyService:
             'close_short': ('buy', 'short'),
         }
         return mapping.get(signal, (None, None))
+
+    # ========== 持仓跟踪与监控（放量跟随出场管理） ==========
+    @staticmethod
+    def _sync_tracked_position_after_exec(signal: SignalRecord, strategy: StrategyConfig, td_mode: str):
+        """信号执行成功后，维护持仓跟踪状态"""
+        if strategy.strategy_type != 'volume_breakout':
+            return
+        from apps.strategy.models import TrackedPosition
+        if signal.signal in ('buy', 'sell'):
+            side = 'long' if signal.signal == 'buy' else 'short'
+            TrackedPosition.objects.update_or_create(
+                strategy=strategy, inst_id=signal.inst_id,
+                defaults={
+                    'side': side,
+                    'entry_price': signal.price or Decimal('0'),
+                    'entry_atr': signal.entry_atr or Decimal('0'),
+                    'stop_loss_price': signal.stop_loss_price or Decimal('0'),
+                    'take_profit_price': signal.take_profit_price,
+                    'tp_mode': signal.tp_mode or 'fixed',
+                    'highest_price': signal.price,
+                    'lowest_price': signal.price,
+                    'trailing_active': False,
+                    'trailing_stop_price': None,
+                    'is_open': True,
+                    'exit_reason': '',
+                },
+            )
+            logger.info(f'持仓跟踪已创建/更新: {signal.inst_id} {side}')
+        elif signal.signal in ('close_long', 'close_short'):
+            tp = TrackedPosition.objects.filter(
+                strategy=strategy, inst_id=signal.inst_id, is_open=True).first()
+            if tp:
+                tp.is_open = False
+                tp.close_time = timezone.now()
+                tp.exit_reason = signal.reason or 'signal'
+                tp.save()
+                logger.info(f'持仓跟踪已关闭: {signal.inst_id} 原因={tp.exit_reason}')
+
+    @staticmethod
+    def monitor_positions_for_strategy(strategy: StrategyConfig):
+        """监控放量跟随策略持仓：硬止损 / 固定止盈 / 移动止盈，并统计单日止损"""
+        from apps.strategy.models import TrackedPosition
+        from datetime import timedelta
+
+        if strategy.strategy_type != 'volume_breakout':
+            return
+        client = get_okx_client()
+        trailing_trigger = float(StrategyService._vb_param(strategy, 'trailing_trigger', 0.5))
+        trailing_factor = float(StrategyService._vb_param(strategy, 'trailing_factor', 0.8))
+        today = timezone.now().date()
+
+        open_positions = TrackedPosition.objects.filter(strategy=strategy, is_open=True)
+        for tp in open_positions:
+            try:
+                market_service = MarketDataService()
+                limit = 5
+                market_service.fetch_klines(inst_id=tp.inst_id, bar=strategy.bar, limit=limit)
+                df = market_service.get_klines_df(inst_id=tp.inst_id, bar=strategy.bar, limit=limit)
+                if df.empty:
+                    continue
+                cur_price = float(df['close'].iloc[-1])
+                cur_high = float(df['high'].iloc[-1])
+                cur_low = float(df['low'].iloc[-1])
+
+                if tp.highest_price is None or cur_high > float(tp.highest_price):
+                    tp.highest_price = Decimal(str(cur_high))
+                if tp.lowest_price is None or cur_low < float(tp.lowest_price):
+                    tp.lowest_price = Decimal(str(cur_low))
+
+                sl = float(tp.stop_loss_price)
+                entry = float(tp.entry_price)
+                sl_dist = abs(entry - sl)
+
+                triggered = False
+                exit_reason = ''
+                if tp.side == 'long':
+                    if cur_price <= sl:
+                        triggered = True
+                        exit_reason = 'stop_loss'
+                    elif tp.tp_mode == 'fixed' and tp.take_profit_price and cur_price >= float(tp.take_profit_price):
+                        triggered = True
+                        exit_reason = 'take_profit'
+                    elif tp.tp_mode == 'trailing':
+                        if cur_price - entry >= trailing_trigger * sl_dist:
+                            tp.trailing_active = True
+                        if tp.trailing_active:
+                            trail = float(tp.highest_price) - trailing_factor * float(tp.entry_atr)
+                            tp.trailing_stop_price = Decimal(str(round(trail, 8)))
+                            if cur_price <= trail:
+                                triggered = True
+                                exit_reason = 'trailing_stop'
+                else:  # short
+                    if cur_price >= sl:
+                        triggered = True
+                        exit_reason = 'stop_loss'
+                    elif tp.tp_mode == 'fixed' and tp.take_profit_price and cur_price <= float(tp.take_profit_price):
+                        triggered = True
+                        exit_reason = 'take_profit'
+                    elif tp.tp_mode == 'trailing':
+                        if entry - cur_price >= trailing_trigger * sl_dist:
+                            tp.trailing_active = True
+                        if tp.trailing_active:
+                            trail = float(tp.lowest_price) + trailing_factor * float(tp.entry_atr)
+                            tp.trailing_stop_price = Decimal(str(round(trail, 8)))
+                            if cur_price >= trail:
+                                triggered = True
+                                exit_reason = 'trailing_stop'
+
+                # 校验 OKX 实际持仓是否还存在（防止手动平仓导致跟踪漂移）
+                try:
+                    pos_resp = client.get_positions(inst_type=strategy.inst_type)
+                    all_pos = pos_resp.get('data', []) if pos_resp.get('code') == '0' else []
+                    matching = [p for p in all_pos if p.get('instId') == tp.inst_id
+                                and float(p.get('pos', 0)) != 0
+                                and ((tp.side == 'long' and p.get('posSide') == 'long')
+                                     or (tp.side == 'short' and p.get('posSide') == 'short'))]
+                    if not matching:
+                        tp.is_open = False
+                        tp.close_time = timezone.now()
+                        tp.exit_reason = 'external_closed'
+                        tp.save()
+                        continue
+                    sz = str(abs(float(matching[0].get('pos', 0))))
+                except Exception as e:
+                    logger.warning(f'检查持仓异常: {e}')
+                    tp.save()
+                    continue
+
+                tp.save()
+
+                if triggered:
+                    side = 'sell' if tp.side == 'long' else 'buy'
+                    pos_side = tp.side
+                    try:
+                        result = client.place_order(
+                            inst_id=tp.inst_id, td_mode=strategy.td_mode,
+                            side=side, pos_side=pos_side, ord_type='market', sz=sz,
+                        )
+                        if result.get('code') == '0':
+                            tp.is_open = False
+                            tp.close_time = timezone.now()
+                            tp.exit_reason = exit_reason
+                            # 单日止损统计
+                            if exit_reason == 'stop_loss':
+                                if tp.daily_stop_date != today:
+                                    tp.daily_stop_count = 0
+                                    tp.daily_stop_date = today
+                                tp.daily_stop_count += 1
+                            tp.save()
+                            SignalRecord.objects.create(
+                                strategy=strategy, inst_id=tp.inst_id,
+                                signal='close_long' if tp.side == 'long' else 'close_short',
+                                pos_side=pos_side, td_mode=strategy.td_mode,
+                                leverage=strategy.leverage, score=Decimal('0.5'),
+                                price=Decimal(str(cur_price)),
+                                reason=f'监控触发出场: {exit_reason}',
+                                is_executed=True,
+                            )
+                            logger.info(f'监控平仓成功: {tp.inst_id} {tp.side} 原因={exit_reason} '
+                                        f'止损计数={tp.daily_stop_count}')
+                    except Exception as e:
+                        logger.error(f'监控平仓失败: {tp.inst_id} {e}')
+            except Exception as e:
+                logger.error(f'监控持仓 {tp.inst_id} 异常: {e}')
+
+    @staticmethod
+    def monitor_all_active_strategies():
+        """监控所有活跃的放量跟随策略持仓"""
+        from apps.strategy.models import StrategyConfig
+        for strategy in StrategyConfig.objects.filter(status='active', strategy_type='volume_breakout'):
+            try:
+                StrategyService.monitor_positions_for_strategy(strategy)
+            except Exception as e:
+                logger.error(f'监控策略 [{strategy.name}] 失败: {e}')
 
 
     # ========== 回测 ==========

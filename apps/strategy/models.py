@@ -31,6 +31,7 @@ class StrategyConfig(models.Model):
     STRATEGY_TYPE_CHOICES = [
         ('factor_composite', '因子综合评分'),
         ('trend_follow', '趋势跟踪'),
+        ('volume_breakout', '放量跟随'),
     ]
 
     name = models.CharField('策略名称', max_length=100, unique=True)
@@ -60,6 +61,10 @@ class StrategyConfig(models.Model):
     # 因子配置
     factors = models.JSONField('使用因子列表', default=list,
                                 help_text='例如: ["momentum", "volatility", "rsi", "macd"]')
+
+    # 策略专属参数（放量跟随等策略的可调超参）
+    params = models.JSONField('策略参数', default=dict, blank=True,
+                              help_text='JSON格式的策略专属参数，例如放量跟随的 VOL_RATIO 等')
 
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
@@ -135,6 +140,13 @@ class SignalRecord(models.Model):
     is_executed = models.BooleanField('是否已执行', default=False)
     created_at = models.DateTimeField('信号时间', auto_now_add=True, db_index=True)
 
+    # 放量跟随策略的出场参数（执行/监控使用）
+    stop_loss_price = models.DecimalField('止损价', max_digits=24, decimal_places=8, null=True, blank=True)
+    take_profit_price = models.DecimalField('止盈价', max_digits=24, decimal_places=8, null=True, blank=True)
+    entry_atr = models.DecimalField('入场ATR', max_digits=24, decimal_places=8, null=True, blank=True)
+    tp_mode = models.CharField('止盈模式', max_length=20, blank=True,
+                               help_text='fixed=固定盈亏比, trailing=移动止盈')
+
     class Meta:
         db_table = 'strategy_signal'
         verbose_name = '交易信号'
@@ -143,6 +155,48 @@ class SignalRecord(models.Model):
 
     def __str__(self):
         return f'{self.strategy.name} - {self.inst_id} {self.get_signal_display()} ({self.score:.2f})'
+
+
+class TrackedPosition(models.Model):
+    """策略持仓跟踪（放量跟随的出场管理使用）"""
+
+    SIDE_CHOICES = [
+        ('long', '多头'),
+        ('short', '空头'),
+    ]
+    TP_MODE_CHOICES = [
+        ('fixed', '固定盈亏比'),
+        ('trailing', '移动止盈'),
+    ]
+
+    strategy = models.ForeignKey(StrategyConfig, on_delete=models.CASCADE,
+                                 related_name='positions', verbose_name='所属策略')
+    inst_id = models.CharField('交易标的', max_length=50)
+    side = models.CharField('持仓方向', max_length=10, choices=SIDE_CHOICES)
+    entry_price = models.DecimalField('入场价', max_digits=24, decimal_places=8)
+    entry_atr = models.DecimalField('入场ATR', max_digits=24, decimal_places=8)
+    stop_loss_price = models.DecimalField('止损价', max_digits=24, decimal_places=8)
+    take_profit_price = models.DecimalField('止盈价', max_digits=24, decimal_places=8, null=True, blank=True)
+    tp_mode = models.CharField('止盈模式', max_length=20, choices=TP_MODE_CHOICES, default='fixed')
+    highest_price = models.DecimalField('持仓期间最高价', max_digits=24, decimal_places=8, null=True, blank=True)
+    lowest_price = models.DecimalField('持仓期间最低价', max_digits=24, decimal_places=8, null=True, blank=True)
+    trailing_active = models.BooleanField('移动止盈已激活', default=False)
+    trailing_stop_price = models.DecimalField('移动止损价', max_digits=24, decimal_places=8, null=True, blank=True)
+    is_open = models.BooleanField('是否持仓中', default=True)
+    open_time = models.DateTimeField('开仓时间', auto_now_add=True)
+    close_time = models.DateTimeField('平仓时间', null=True, blank=True)
+    exit_reason = models.CharField('平仓原因', max_length=50, blank=True)
+    daily_stop_count = models.IntegerField('当日止损笔数', default=0)
+    daily_stop_date = models.DateField('止损统计日期', null=True, blank=True)
+
+    class Meta:
+        db_table = 'strategy_tracked_position'
+        verbose_name = '策略持仓跟踪'
+        verbose_name_plural = verbose_name
+        unique_together = ['strategy', 'inst_id']
+
+    def __str__(self):
+        return f'{self.strategy.name} - {self.inst_id} {self.get_side_display()} ({"持仓" if self.is_open else "已平"})'
 
 
 
