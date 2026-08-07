@@ -18,10 +18,77 @@
           <el-button :type="preloadSize === 1000 ? 'primary' : ''" size="small" @click="switchPreload(1000)">1000条</el-button>
           <el-button :type="preloadSize === 3000 ? 'primary' : ''" size="small" @click="switchPreload(3000)">3000条</el-button>
         </el-button-group>
+        <!-- 主题切换 -->
+        <el-tooltip content="切换主题" placement="bottom">
+          <el-button :icon="chartTheme === 'dark' ? Sunny : Moon" circle @click="toggleTheme" style="margin-left:8px" />
+        </el-tooltip>
+        <el-button type="primary" text @click="showInsights = !showInsights">多周期/对比</el-button>
         <el-button type="primary" :icon="Download" @click="fetchHistory" :loading="fetchLoading" style="margin-left:8px">拉取</el-button>
         <el-button :icon="Refresh" @click="reload" :loading="loading" style="margin-left:8px">刷新</el-button>
       </div>
     </div>
+
+    <!-- 多周期联动 / 品种对比面板 -->
+    <el-card v-if="showInsights" style="margin-top:12px">
+      <template #header>
+        <div class="insights-header">
+          <span>多周期联动</span>
+          <el-radio-group v-model="insightMode" size="small">
+            <el-radio-button value="periods">多周期</el-radio-button>
+            <el-radio-button value="compare">品种对比</el-radio-button>
+          </el-radio-group>
+        </div>
+      </template>
+      <template v-if="insightMode === 'periods'">
+        <el-row :gutter="12">
+          <el-col :span="6" v-for="p in insightPeriods" :key="p">
+            <div class="mini-chart-title">{{ p }}</div>
+            <div :ref="el => setMiniChartRef(p, el)" class="mini-chart" @click="switchBar(p)"></div>
+          </el-col>
+        </el-row>
+      </template>
+      <template v-else>
+        <div class="compare-bar">
+          <instrument-select v-model="compareInst" placeholder="选择对比品种" width="220px" />
+          <el-button size="small" type="primary" @click="loadCompare" :loading="compareLoading">对比</el-button>
+        </div>
+        <div ref="compareChartRef" class="compare-chart"></div>
+      </template>
+    </el-card>
+
+    <!-- 指标/画线工具条 -->
+    <el-card style="margin-top:12px">
+      <div class="toolbar-row">
+        <div class="toolbar-group">
+          <span class="toolbar-label">主图指标</span>
+          <el-radio-group v-model="mainIndicator" size="small" @change="applyMainIndicator">
+            <el-radio-button value="none">无</el-radio-button>
+            <el-radio-button value="ma">MA</el-radio-button>
+            <el-radio-button value="ema">EMA</el-radio-button>
+            <el-radio-button value="boll">BOLL</el-radio-button>
+          </el-radio-group>
+        </div>
+        <div class="toolbar-group">
+          <span class="toolbar-label">副图指标</span>
+          <el-radio-group v-model="subIndicator" size="small" @change="applySubIndicator">
+            <el-radio-button value="none">无</el-radio-button>
+            <el-radio-button value="macd">MACD</el-radio-button>
+            <el-radio-button value="kdj">KDJ</el-radio-button>
+            <el-radio-button value="rsi">RSI</el-radio-button>
+            <el-radio-button value="wr">WR</el-radio-button>
+          </el-radio-group>
+        </div>
+        <div class="toolbar-group">
+          <span class="toolbar-label">画线</span>
+          <el-radio-group v-model="drawMode" size="small" @change="applyDrawMode">
+            <el-radio-button value="none">关闭</el-radio-button>
+            <el-radio-button value="segment">趋势线</el-radio-button>
+            <el-radio-button value="horizontalStraightLine">水平线</el-radio-button>
+            <el-radio-button value="fibonacciLine">斐波那契</el-radio-button>
+          </el-radio-group>
+        </div>
+      </div>
+    </el-card>
 
     <!-- 图表区域 -->
     <el-card style="margin-top:12px">
@@ -83,8 +150,9 @@ import InstrumentSelect from '@/components/InstrumentSelect.vue'
 import { useConnectionStore } from '@/stores/connection'
 import { useRealtimeStore } from '@/stores/realtime'
 import { ElMessage } from 'element-plus'
-import { Download, Refresh, Mouse, Loading } from '@element-plus/icons-vue'
+import { Download, Refresh, Mouse, Loading, Sunny, Moon } from '@element-plus/icons-vue'
 import { init, dispose } from 'klinecharts'
+import * as echarts from 'echarts'
 
 const connectionStore = useConnectionStore()
 const realtimeStore = useRealtimeStore()
@@ -98,6 +166,22 @@ const instId = ref('BTC-USDT')
 const bar = ref('1H')
 const preloadSize = ref(1000)
 const bars = ['1m', '3m', '5m', '15m', '30m', '1H', '2H', '4H', '6H', '12H', '1D', '1W', '1M']
+
+// 主题与指标状态
+const chartTheme = ref(localStorage.getItem('kline_theme') || 'dark')
+const mainIndicator = ref('ma')
+const subIndicator = ref('macd')
+const drawMode = ref('none')
+
+// 多周期/对比
+const showInsights = ref(false)
+const insightMode = ref('periods')
+const insightPeriods = ['1m', '15m', '1H', '1D']
+const miniCharts = {}
+const miniChartEls = {}
+const compareInst = ref('ETH-USDT')
+const compareLoading = ref(false)
+const compareChart = null
 
 let chart = null
 let resizeObserver = null
@@ -315,20 +399,197 @@ const initChart = () => {
   })
 
   if (chart) {
-    // MA 均线叠在主图上
-    chart.createIndicator(
-      { name: 'MA', calcParams: [5, 10, 20, 60], shortName: 'MA' },
-      true,
-      { id: 'candle_pane' }
-    )
-    // MACD 副图
-    chart.createIndicator('MACD', false, { height: 180, minHeight: 60 })
-    // RSI 副图
-    chart.createIndicator('RSI', false, { height: 160, minHeight: 50 })
+    // 按主题设置默认配置
+    chart.setStyles(getThemeStyles())
+    // 主图指标
+    if (mainIndicator.value === 'ma') {
+      chart.createIndicator(
+        { name: 'MA', calcParams: [5, 10, 20, 60], shortName: 'MA' },
+        true,
+        { id: 'candle_pane' }
+      )
+    } else if (mainIndicator.value === 'ema') {
+      chart.createIndicator(
+        { name: 'EMA', calcParams: [7, 25, 99], shortName: 'EMA' },
+        true,
+        { id: 'candle_pane' }
+      )
+    } else if (mainIndicator.value === 'boll') {
+      chart.createIndicator('BOLL', true, { id: 'candle_pane' })
+    }
+    // 副图指标
+    applySubIndicator()
 
     // 设置滑动加载回调（仅处理左右滚动的 forward/backward）
     chart.setLoadDataCallback(loadDataCallback)
   }
+}
+
+// ---------- 主题与指标 ----------
+const getThemeStyles = () => {
+  if (chartTheme.value === 'dark') {
+    return {
+      grid: { horizontal: { color: '#1e222d' }, vertical: { color: '#1e222d' } },
+      candle: {
+        bar: { upColor: '#26a69a', downColor: '#ef5350', noChangeColor: '#888888' },
+      },
+      indicator: { lines: [{ color: '#ef5350', size: 1 }] },
+    }
+  }
+  return {
+    grid: { horizontal: { color: '#e5e6eb' }, vertical: { color: '#f5f7fa' } },
+    candle: {
+      bar: { upColor: '#f26d28', downColor: '#2da7ff', noChangeColor: '#888888' },
+    },
+  }
+}
+
+const toggleTheme = () => {
+  chartTheme.value = chartTheme.value === 'dark' ? 'light' : 'dark'
+  localStorage.setItem('kline_theme', chartTheme.value)
+  if (chart) chart.setStyles(getThemeStyles())
+}
+
+const applyMainIndicator = (val) => {
+  if (!chart) return
+  chart.removeIndicator('candle_pane', 'MA')
+  chart.removeIndicator('candle_pane', 'EMA')
+  chart.removeIndicator('candle_pane', 'BOLL')
+  if (val === 'ma') {
+    chart.createIndicator({ name: 'MA', calcParams: [5, 10, 20, 60], shortName: 'MA' }, true, { id: 'candle_pane' })
+  } else if (val === 'ema') {
+    chart.createIndicator({ name: 'EMA', calcParams: [7, 25, 99], shortName: 'EMA' }, true, { id: 'candle_pane' })
+  } else if (val === 'boll') {
+    chart.createIndicator('BOLL', true, { id: 'candle_pane' })
+  }
+}
+
+const applySubIndicator = (val) => {
+  const target = val || subIndicator.value
+  if (!chart) return
+  // 清除现有副图（除主图外）
+  const panes = chart.getPanes()
+  for (const p of panes) {
+    if (p.id !== 'candle_pane') chart.removePane(p.id)
+  }
+  if (target === 'none') return
+  const configs = {
+    macd: ['MACD', { height: 120, minHeight: 50 }],
+    kdj: ['KDJ', { height: 120, minHeight: 50 }],
+    rsi: ['RSI', { height: 120, minHeight: 50 }],
+    wr: ['WR', { height: 120, minHeight: 50 }],
+  }
+  const [name, opts] = configs[target]
+  chart.createIndicator(name, false, opts)
+}
+
+// ---------- 多周期联动 ----------
+const setMiniChartRef = (period, el) => {
+  if (!el) return
+  miniChartEls[period] = el
+}
+
+const switchBar = (p) => {
+  bar.value = p
+  // 触发 watch 重建图表
+  recreateChart()
+  ElMessage.success(`已切换到 ${p} 周期`)
+}
+
+const loadMiniCharts = async () => {
+  await nextTick()
+  for (const p of insightPeriods) {
+    const el = miniChartEls[p]
+    if (!el) continue
+    try {
+      const res = await scrollKlines({ inst_id: instId.value, bar: p, limit: 120, auto_fetch: 'false' })
+      const items = res?.results || []
+      if (!items.length) continue
+      const chart = miniCharts[p] || echarts.init(el)
+      miniCharts[p] = chart
+      const data = items.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+      chart.setOption({
+        animation: false,
+        grid: { left: 4, right: 4, top: 4, bottom: 4 },
+        xAxis: { type: 'category', show: false, data: data.map(d => d.timestamp) },
+        yAxis: { type: 'value', show: false, scale: true },
+        tooltip: { trigger: 'axis', formatter: (ps) => `${ps[0].axisValue}<br/>${Number(ps[0].data).toFixed(2)}` },
+        series: [{
+          type: 'line', data: data.map(d => parseFloat(d.close)),
+          showSymbol: false, lineStyle: { width: 1.5, color: '#409eff' },
+        }],
+      })
+    } catch { /* 忽略单周期加载失败 */ }
+  }
+}
+
+const loadCompare = async () => {
+  if (!compareInst.value || compareInst.value === instId.value) {
+    ElMessage.warning('请选择不同的对比品种'); return
+  }
+  compareLoading.value = true
+  try {
+    await nextTick()
+    const el = document.querySelector('.compare-chart')
+    if (!el) return
+    const chart = compareChart || echarts.init(el)
+    // 拉取两个品种数据
+    const [mainRes, cmpRes] = await Promise.all([
+      scrollKlines({ inst_id: instId.value, bar: bar.value, limit: 300, auto_fetch: 'false' }),
+      scrollKlines({ inst_id: compareInst.value, bar: bar.value, limit: 300, auto_fetch: 'false' }),
+    ])
+    const main = (mainRes?.results || []).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+    const cmp = (cmpRes?.results || []).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+    if (!main.length || !cmp.length) { ElMessage.warning('对比数据不足'); return }
+
+    // 归一化到 100 起点
+    const baseMain = parseFloat(main[0].close) || 1
+    const baseCmp = parseFloat(cmp[0].close) || 1
+    const mainNorm = main.map(d => (parseFloat(d.close) / baseMain) * 100)
+    const cmpNorm = cmp.map(d => (parseFloat(d.close) / baseCmp) * 100)
+
+    chart.setOption({
+      animation: false,
+      color: ['#409eff', '#f56c6c'],
+      tooltip: { trigger: 'axis' },
+      legend: { data: [instId.value, compareInst.value] },
+      grid: { left: 50, right: 20, top: 30, bottom: 40 },
+      xAxis: { type: 'category', data: main.map(d => d.timestamp), boundaryGap: false },
+      yAxis: { type: 'value', scale: true, name: '归一化(100)' },
+      series: [
+        { name: instId.value, type: 'line', data: mainNorm, showSymbol: false, lineStyle: { width: 2 } },
+        { name: compareInst.value, type: 'line', data: cmpNorm, showSymbol: false, lineStyle: { width: 2 } },
+      ],
+    })
+  } catch (e) { ElMessage.error(e.message) }
+  compareLoading.value = false
+}
+
+const drawOverlays = []
+
+const applyDrawMode = (val) => {
+  if (!chart) return
+  if (val === 'none') {
+    // 清除所有画线
+    for (const id of drawOverlays) chart.removeOverlay({ id })
+    drawOverlays.length = 0
+    drawMode.value = 'none'
+    return
+  }
+  // 在图表中段创建一条画线
+  const kls = chart.getDataList()
+  if (!kls.length) return
+  const mid = Math.floor(kls.length / 2)
+  const k = kls[mid]
+  const k2 = kls[Math.min(mid + 20, kls.length - 1)]
+  const id = chart.createOverlay({
+    name: val,
+    points: [
+      { timestamp: k.timestamp, value: k.close },
+      { timestamp: k2.timestamp, value: k2.close },
+    ],
+  })
+  if (id) drawOverlays.push(id)
 }
 
 // ---------- 滑动加载回调：核心逻辑 ----------
@@ -449,6 +710,18 @@ watch([instId, bar, () => connectionStore.environment], () => {
   recreateChart()
 })
 
+// 打开面板时加载多周期迷你图
+watch(showInsights, (v) => {
+  if (v && insightMode.value === 'periods') {
+    setTimeout(() => loadMiniCharts(), 100)
+  }
+})
+watch(insightMode, (v) => {
+  if (v === 'periods' && showInsights.value) {
+    setTimeout(() => loadMiniCharts(), 100)
+  }
+})
+
 // ---------- 生命周期 ----------
 onMounted(async () => {
   await nextTick()
@@ -468,6 +741,10 @@ onBeforeUnmount(() => {
   if (chart) {
     dispose(chart)
     chart = null
+  }
+  for (const p in miniCharts) {
+    miniCharts[p]?.dispose()
+    delete miniCharts[p]
   }
 })
 </script>
@@ -520,6 +797,30 @@ onBeforeUnmount(() => {
   gap: 12px;
   color: #909399;
   font-size: 14px;
+}
+
+.insights-header { display: flex; justify-content: space-between; align-items: center; }
+.mini-chart-title { font-size: 12px; color: #909399; margin-bottom: 4px; }
+.mini-chart { height: 90px; cursor: pointer; border: 1px solid #ebeef5; border-radius: 4px; }
+.mini-chart:hover { border-color: #409eff; }
+.compare-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.compare-chart { height: 260px; }
+
+.toolbar-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.toolbar-label {
+  font-size: 13px;
+  color: #909399;
+  white-space: nowrap;
 }
 
 .chart-toolbar {
