@@ -95,6 +95,34 @@ FACTORS = [
         'description': '快慢EMA金叉死叉信号。',
         'params': {'fast': 12, 'slow': 26},
     },
+    {
+        'name': 'obv',
+        'display_name': 'OBV能量潮',
+        'factor_type': 'volume',
+        'description': '基于成交量累计的能量潮指标。OBV斜率向上看多，向下看空。',
+        'params': {'period': 20},
+    },
+    {
+        'name': 'cci',
+        'display_name': 'CCI顺势指标',
+        'factor_type': 'momentum',
+        'description': 'CCI<-100超卖买入，CCI>100超买卖出。',
+        'params': {'period': 20},
+    },
+    {
+        'name': 'wr',
+        'display_name': '威廉指标WR',
+        'factor_type': 'momentum',
+        'description': 'WR<-80超卖买入，WR>-20超买卖出。',
+        'params': {'period': 14},
+    },
+    {
+        'name': 'ichimoku',
+        'display_name': '一目均衡表',
+        'factor_type': 'trend',
+        'description': '价格在云层上方且转折线上穿基准线看多，反之看空。',
+        'params': {'conversion': 9, 'base': 26, 'span': 52},
+    },
 ]
 
 default_user = User.objects.get(id=DEFAULT_USER_ID)

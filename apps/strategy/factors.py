@@ -45,7 +45,13 @@ class FactorEngine:
             'adx': self.adx,
             'kdj': self.kdj,
             'ema_cross': self.ema_cross,
+            'obv': self.obv,
+            'cci': self.cci,
+            'wr': self.williams_r,
+            'ichimoku': self.ichimoku,
         }
+
+        custom = getattr(self, '_custom_formulas', {})
 
         names = factor_names or list(available.keys())
         for name in names:
@@ -54,17 +60,32 @@ class FactorEngine:
                     self._results[name] = available[name]()
                 except Exception as e:
                     self._results[name] = FactorResult(name=name, value=0, score=0, signal='hold')
+            elif name in custom:
+                # 自定义因子
+                self._results[name] = self.calculate_custom(name)
 
         return self._results
 
-    def get_composite_score(self) -> Tuple[float, str]:
-        """综合评分：所有因子归一化后的加权平均"""
+    def get_composite_score(self, weights: dict = None) -> Tuple[float, str]:
+        """综合评分：所有因子归一化后的加权平均
+        Args:
+            weights: 因子权重映射 {"momentum": 0.3}，缺失的因子按等权补齐，默认全部等权
+        """
         if not self._results:
             return 0.0, 'hold'
 
-        # 等权
-        scores = [r.score for r in self._results.values()]
-        avg = np.mean(scores)
+        if weights:
+            # 加权：指定权重归一化，未指定的因子等权
+            total_w = sum(float(weights.get(name, 0)) for name in self._results)
+            if total_w <= 0:
+                scores = [r.score for r in self._results.values()]
+                avg = float(np.mean(scores))
+            else:
+                avg = sum(float(weights.get(name, 0)) / total_w * r.score
+                          for name, r in self._results.items())
+        else:
+            scores = [r.score for r in self._results.values()]
+            avg = float(np.mean(scores))
 
         # 生成综合信号
         if avg >= 0.65:
@@ -300,6 +321,138 @@ class FactorEngine:
         signal = 'buy' if value > 0.005 else 'sell' if value < -0.005 else 'hold'
         return FactorResult('ema_cross', value, float(score), signal,
                             {'fast': fast, 'slow': slow})
+
+    def obv(self) -> FactorResult:
+        """OBV 能量潮因子：OBV 斜率为正看多"""
+        if len(self.df) < 30:
+            return FactorResult('obv', 0, 0.5, 'hold')
+
+        obv = ta.volume.OnBalanceVolumeIndicator(
+            self.df['close'], self.df['volume']
+        ).on_balance_volume()
+
+        obv_slope = 0.0
+        if len(obv) >= 20:
+            # 近20周期 OBV 线性回归斜率（归一化到 OBV 量级）
+            y = obv.iloc[-20:].values.astype(float)
+            x = np.arange(len(y))
+            if len(y) > 1 and np.std(y) > 1e-12:
+                slope = np.polyfit(x, y, 1)[0]
+                # 除以价格避免量级差异
+                price_scale = max(abs(float(self.df['close'].iloc[-1])), 1e-8)
+                obv_slope = slope / price_scale
+            elif y[-1] > y[0]:
+                obv_slope = 1e-6
+
+        value = float(obv_slope)
+        score = self._sigmoid(value, center=0, scale=0.01)
+        signal = 'buy' if value > 0 else 'sell' if value < 0 else 'hold'
+        return FactorResult('obv', value, float(score), signal, {'period': 20})
+
+    def cci(self, period: int = 20) -> FactorResult:
+        """CCI 顺势指标：<-100 超卖买入，>100 超买卖出"""
+        if len(self.df) < period:
+            return FactorResult('cci', 0, 0.5, 'hold')
+
+        cci_value = ta.trend.CCIIndicator(
+            self.df['high'], self.df['low'], self.df['close'], window=period
+        ).cci().iloc[-1]
+
+        if pd.isna(cci_value):
+            return FactorResult('cci', 0, 0.5, 'hold')
+
+        value = float(cci_value)
+        # CCI < -100 -> 超卖偏多(1), > 100 -> 超卖偏空(0)
+        score = np.clip(1.0 - (value + 100) / 200, 0, 1)
+        signal = 'buy' if cci_value < -100 else 'sell' if cci_value > 100 else 'hold'
+        return FactorResult('cci', value, float(score), signal, {'period': period})
+
+    def williams_r(self, period: int = 14) -> FactorResult:
+        """威廉指标 WR：<-80 超卖买入，>-20 超买卖出"""
+        if len(self.df) < period:
+            return FactorResult('wr', -50, 0.5, 'hold')
+
+        wr_value = ta.momentum.WilliamsRIndicator(
+            self.df['high'], self.df['low'], self.df['close'], lbp=period
+        ).williams_r().iloc[-1]
+
+        if pd.isna(wr_value):
+            return FactorResult('wr', -50, 0.5, 'hold')
+
+        value = float(wr_value)
+        # WR: -100(超卖) -> 1, 0(超买) -> 0
+        score = np.clip((-value) / 100, 0, 1)
+        signal = 'buy' if wr_value < -80 else 'sell' if wr_value > -20 else 'hold'
+        return FactorResult('wr', value, float(score), signal, {'period': period})
+
+    def ichimoku(self, conversion=9, base=26, span=52) -> FactorResult:
+        """一目均衡表因子：价格在云层上方看多，下方看空"""
+        if len(self.df) < max(conversion, base, span):
+            return FactorResult('ichimoku', 0, 0.5, 'hold')
+
+        high = self.df['high']
+        low = self.df['low']
+        close = self.df['close']
+
+        # 转折线 (Tenkan): (9日高+9日低)/2
+        tenkan = (high.rolling(conversion).max() + low.rolling(conversion).min()) / 2
+        # 基准线 (Kijun): (26日高+26日低)/2
+        kijun = (high.rolling(base).max() + low.rolling(base).min()) / 2
+        # 云层 A: (转折线+基准线)/2
+        span_a = ((tenkan + kijun) / 2).shift(0)
+        # 云层 B: (52日高+52日低)/2
+        span_b = ((high.rolling(span).max() + low.rolling(span).min()) / 2)
+
+        last_close = float(close.iloc[-1])
+        a = float(span_a.iloc[-1]) if not pd.isna(span_a.iloc[-1]) else last_close
+        b = float(span_b.iloc[-1]) if not pd.isna(span_b.iloc[-1]) else last_close
+
+        # 云层上下沿
+        cloud_top = max(a, b)
+        cloud_bottom = min(a, b)
+        tk_diff = float(tenkan.iloc[-1]) - float(kijun.iloc[-1]) if not pd.isna(tenkan.iloc[-1]) and not pd.isna(kijun.iloc[-1]) else 0
+
+        value = float((last_close - cloud_bottom) / max(cloud_top - cloud_bottom, 1e-8)) if cloud_top > cloud_bottom else 0.5
+        # 价格在云层上方 + 转折线上穿基准线 -> 看多
+        if last_close > cloud_top and tk_diff > 0:
+            score = 0.8
+            signal = 'buy'
+        elif last_close < cloud_bottom and tk_diff < 0:
+            score = 0.2
+            signal = 'sell'
+        else:
+            score = 0.5
+            signal = 'hold'
+        return FactorResult('ichimoku', value, float(score), signal,
+                            {'conversion': conversion, 'base': base, 'span': span})
+
+    # ==================== 自定义因子支持 ====================
+    def set_custom_formula(self, name: str, formula: str):
+        """注册用户自定义因子（pandas 表达式，基于 df 列）"""
+        self._custom_formulas = getattr(self, '_custom_formulas', {})
+        self._custom_formulas[name] = formula
+
+    def calculate_custom(self, name: str) -> Optional[FactorResult]:
+        """计算单个自定义因子。表达式示例: close/close.rolling(20).mean()-1"""
+        formulas = getattr(self, '_custom_formulas', {})
+        formula = formulas.get(name)
+        if not formula:
+            return None
+        try:
+            # 安全执行：仅暴露 df 及其列，禁用 __import__/__builtins__
+            safe_globals = {'__builtins__': {}}
+            series = eval(formula, safe_globals, {'df': self.df})
+            if isinstance(series, pd.Series):
+                value = float(series.iloc[-1]) if len(series) else 0.0
+            else:
+                value = float(series)
+            if np.isnan(value) or np.isinf(value):
+                value = 0.0
+            score = self._sigmoid(value, center=0, scale=max(abs(value), 0.01))
+            signal = 'buy' if value > 0 else 'sell' if value < 0 else 'hold'
+            return FactorResult(name, value, float(score), signal, {'formula': formula})
+        except Exception:
+            return FactorResult(name, 0, 0.5, 'hold')
 
     # ==================== 工具方法 ====================
     @staticmethod

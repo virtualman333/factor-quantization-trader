@@ -64,6 +64,8 @@ class StrategyConfig(models.Model):
     # 因子配置
     factors = models.JSONField('使用因子列表', default=list,
                                 help_text='例如: ["momentum", "volatility", "rsi", "macd"]')
+    factor_weights = models.JSONField('因子权重', default=dict, blank=True,
+                                      help_text='因子权重映射，如 {"momentum": 0.3, "rsi": 0.2}；留空则等权')
 
     # 策略专属参数（放量跟随等策略的可调超参）
     params = models.JSONField('策略参数', default=dict, blank=True,
@@ -101,6 +103,11 @@ class FactorDefinition(models.Model):
     factor_type = models.CharField('因子类型', max_length=20, choices=FACTOR_TYPE_CHOICES)
     description = models.TextField('因子描述', blank=True)
     params = models.JSONField('因子参数', default=dict, help_text='JSON格式的参数配置')
+    # 自定义因子：用户可配置的计算逻辑（pandas 表达式，基于 df 列 open/high/low/close/volume）
+    formula = models.TextField('计算公式', blank=True,
+                               help_text='自定义因子 pandas 表达式，如 close/close.rolling(20).mean()-1。'
+                                         '方向: 值越大越看多')
+    is_custom = models.BooleanField('是否自定义', default=False)
     is_active = models.BooleanField('是否启用', default=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
 
@@ -238,3 +245,31 @@ class BacktestResult(models.Model):
 
     def __str__(self):
         return f'{self.strategy.name} 回测 [{self.start_date.date()}~{self.end_date.date()}] 收益: {self.total_return:.2%}'
+
+
+class StrategyPortfolio(models.Model):
+    """多策略组合管理：策略组合 + 资金分配"""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                             related_name='portfolios', verbose_name='所属用户',
+                             null=True, default=None)
+    name = models.CharField('组合名称', max_length=100)
+    description = models.TextField('组合描述', blank=True)
+    # 组合内策略及资金权重: [{"strategy_id": 1, "weight": 0.5}, ...] weight 求和=1
+    strategies = models.JSONField('组合策略及权重', default=list,
+                                  help_text='[{"strategy_id": 1, "weight": 0.5}]')
+    initial_capital = models.DecimalField('初始资金(USD)', max_digits=20, decimal_places=4, default=1000)
+    status = models.CharField('状态', max_length=10, choices=[
+        ('active', '运行中'), ('paused', '已暂停'), ('stopped', '已停止'),
+    ], default='stopped')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        db_table = 'strategy_portfolio'
+        verbose_name = '策略组合'
+        verbose_name_plural = verbose_name
+        unique_together = [('user', 'name')]
+
+    def __str__(self):
+        return f'{self.name} ({len(self.strategies)}个策略)'

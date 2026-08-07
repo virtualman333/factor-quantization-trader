@@ -81,6 +81,12 @@ const routes = [
         meta: { title: '回测结果', icon: 'Histogram' },
       },
       {
+        path: 'strategy/portfolios',
+        name: 'Portfolios',
+        component: () => import('@/views/strategy/Portfolios.vue'),
+        meta: { title: '策略组合', icon: 'Files' },
+      },
+      {
         path: 'orders/list',
         name: 'OrderList',
         component: () => import('@/views/orders/List.vue'),

@@ -31,6 +31,21 @@ logger = logging.getLogger(__name__)
 class StrategyService:
     """策略服务"""
 
+    # ========== 自定义因子 ==========
+    @staticmethod
+    def _get_custom_factors(strategy: StrategyConfig, user=None) -> List[Dict]:
+        """获取用户的启用的自定义因子列表"""
+        from apps.strategy.models import FactorDefinition
+        qs = FactorDefinition.objects.filter(
+            is_active=True, is_custom=True, user=strategy.user
+        )
+        if not qs.exists():
+            return []
+        return [
+            {'name': f.name, 'formula': f.formula}
+            for f in qs if f.formula
+        ]
+
     # ========== 信号生成 ==========
     @staticmethod
     def _calculate_atr(df, atr_len=14):
@@ -96,8 +111,15 @@ class StrategyService:
                     continue
 
                 engine = FactorEngine(df)
-                engine.calculate_all(strategy.factors)
-                composite_score, composite_signal = engine.get_composite_score()
+                # 计算策略因子 + 用户自定义因子
+                factor_list = list(strategy.factors or [])
+                custom_factors = StrategyService._get_custom_factors(strategy, user=user)
+                for cf in custom_factors:
+                    engine.set_custom_formula(cf['name'], cf['formula'])
+                    factor_list.append(cf['name'])
+                engine.calculate_all(factor_list)
+                weights = (strategy.factor_weights or {}) if strategy.factor_weights else None
+                composite_score, composite_signal = engine.get_composite_score(weights=weights)
 
                 current_price = float(df['close'].iloc[-1])
                 final_signal = StrategyService._filter_by_direction(composite_signal, strategy.direction)
@@ -743,40 +765,57 @@ class StrategyService:
 
         env = SystemConfig.get_config(user=user).active_environment
 
-        # 获取所有标的的历史K线（按当前环境过滤）
-        all_klines = KLine.objects.filter(
-            environment=env,
-            instrument__inst_id__in=strategy.symbols,
-            bar=strategy.bar,
-            timestamp__gte=start_date,
-            timestamp__lte=end_date,
-        ).order_by('timestamp')
-
-        if not all_klines.exists():
+        # 一次性载入回测区间全部K线到内存（避免逐根K线查库的性能瓶颈）
+        import pandas as pd
+        all_klines = list(
+            KLine.objects.select_related('instrument').filter(
+                environment=env,
+                instrument__inst_id__in=strategy.symbols,
+                bar=strategy.bar,
+                timestamp__gte=start_date,
+                timestamp__lte=end_date,
+            ).order_by('timestamp')
+        )
+        if not all_klines:
             raise StrategyError('回测区间内无K线数据')
+
+        # 按品种分组构建 DataFrame 缓存 {symbol: DataFrame(index=timestamp)}
+        from collections import defaultdict
+        symbol_rows = defaultdict(list)
+        for k in all_klines:
+            symbol_rows[k.instrument.inst_id].append({
+                'timestamp': k.timestamp,
+                'open': float(k.open), 'high': float(k.high),
+                'low': float(k.low), 'close': float(k.close),
+                'volume': float(k.vol),
+            })
+        df_cache = {}
+        for sym, rows in symbol_rows.items():
+            sym_df = pd.DataFrame(rows).set_index('timestamp')
+            df_cache[sym] = sym_df
 
         capital = float(strategy.initial_capital)
         initial_capital = capital
         equity_curve = [(start_date, capital)]
         trades_log = []
 
-        # 按时间分组
+        # 按时间分组（保持时间有序）
+        all_klines.sort(key=lambda k: k.timestamp)
         from itertools import groupby
         grouped = groupby(all_klines, key=lambda k: k.timestamp)
+
+        factor_lookback = 200  # 因子计算窗口
 
         for timestamp, klines_group in grouped:
             # 每根K线评估一次信号
             for kline in klines_group:
                 sym = kline.instrument.inst_id
-                # 获取该时间点前的K线数据用于因子计算
-                df = MarketDataService.get_klines_df(
-                    inst_id=sym, bar=strategy.bar, limit=200, user=user
-                )
-                if df.empty:
+                sym_df = df_cache.get(sym)
+                if sym_df is None or sym_df.empty:
                     continue
 
-                # 过滤到当前时间之前
-                df = df[df.index <= timestamp]
+                # 从内存切片该时间点前的数据（最后 factor_lookback 根）
+                df = sym_df.loc[:timestamp].iloc[-factor_lookback:]
                 if len(df) < 50:
                     continue
 
@@ -878,3 +917,204 @@ class StrategyService:
         )
         logger.info(f'回测完成: 总收益 {total_return:.2%}, 夏普 {sharpe:.2f}, 最大回撤 {max_dd:.2%}')
         return result
+
+    # ========== 策略参数优化器（网格搜索） ==========
+    @staticmethod
+    def optimize_params(strategy: StrategyConfig,
+                        start_date: datetime, end_date: datetime,
+                        param_grid: Dict[str, list], user=None) -> List[Dict]:
+        """网格搜索策略参数，返回按目标指标排序的结果列表。
+        仅对放量跟随策略的可调参数做网格搜索（或传入任意 params 键）。
+        """
+        from apps.strategy.models import BacktestResult
+
+        base_params = dict(strategy.params or {})
+        keys = list(param_grid.keys())
+        results = []
+
+        # 生成网格组合
+        def _gen(prefix: dict, idx: int):
+            if idx >= len(keys):
+                yield dict(prefix)
+                return
+            key = keys[idx]
+            for val in param_grid[key]:
+                prefix2 = dict(prefix)
+                prefix2[key] = val
+                yield from _gen(prefix2, idx + 1)
+
+        for combo in _gen({}, 0):
+            # 临时修改策略参数并回测
+            strategy.params = {**base_params, **combo}
+            try:
+                bt = StrategyService.run_backtest(
+                    strategy, start_date=start_date, end_date=end_date, user=user
+                )
+                # 清理临时回测记录，只保留最佳
+                bt.delete()
+                results.append({
+                    'params': combo,
+                    'total_return': float(bt.total_return),
+                    'sharpe_ratio': float(bt.sharpe_ratio or 0),
+                    'max_drawdown': float(bt.max_drawdown),
+                    'win_rate': float(bt.win_rate),
+                    'total_trades': bt.total_trades,
+                })
+            except Exception as e:
+                logger.warning(f'参数组合 {combo} 回测失败: {e}')
+            finally:
+                strategy.params = base_params
+
+        # 按夏普比率降序，其次按收益
+        results.sort(key=lambda r: (r['sharpe_ratio'], r['total_return']), reverse=True)
+        return results[:50]
+
+    # ========== 因子权重自动优化 ==========
+    @staticmethod
+    def optimize_factor_weights(strategy: StrategyConfig,
+                                start_date: datetime, end_date: datetime,
+                                user=None, iterations: int = 10) -> Dict:
+        """基于回测结果自动优化因子权重（模拟退火简化版/随机爬山）"""
+        import random
+
+        factors = list(strategy.factors or [])
+        if len(factors) < 2:
+            return {'error': '至少需要2个因子才能优化权重'}
+
+        def _score(weights: Dict) -> float:
+            strategy.factor_weights = weights
+            try:
+                bt = StrategyService.run_backtest(
+                    strategy, start_date=start_date, end_date=end_date, user=user
+                )
+                bt.delete()
+                return float(bt.sharpe_ratio or 0) * 10 + float(bt.total_return) * 2
+            except Exception:
+                return float('-inf')
+            finally:
+                strategy.factor_weights = None
+
+        best_weights = {f: 1.0 / len(factors) for f in factors}
+        best_score = _score(best_weights)
+
+        for i in range(iterations):
+            # 随机扰动
+            candidate = {f: best_weights[f] + random.uniform(-0.2, 0.2) for f in factors}
+            candidate = {f: max(v, 0.05) for f, v in candidate.items()}
+            total = sum(candidate.values())
+            candidate = {f: v / total for f, v in candidate.items()}
+            s = _score(candidate)
+            if s > best_score:
+                best_score = s
+                best_weights = candidate
+
+        strategy.factor_weights = best_weights
+        strategy.save(update_fields=['factor_weights'])
+
+        return {
+            'weights': {k: round(v, 4) for k, v in best_weights.items()},
+            'score': round(best_score, 4),
+        }
+
+    # ========== 多策略组合回测 ==========
+    @staticmethod
+    def run_portfolio_backtest(portfolio, start_date: datetime, end_date: datetime,
+                               user=None) -> Dict:
+        """组合回测：按权重分配资金给各策略独立回测，聚合权益曲线"""
+        from apps.strategy.models import StrategyConfig, BacktestResult
+
+        items = portfolio.strategies or []
+        if not items:
+            raise StrategyError('组合内无策略')
+
+        total_weight = sum(float(i.get('weight', 0)) for i in items)
+        if total_weight <= 0:
+            raise StrategyError('组合权重总和需大于0')
+
+        initial_capital = float(portfolio.initial_capital)
+        curves = []  # (strategy_name, weight, equity_curve)
+        for item in items:
+            strategy = StrategyConfig.objects.filter(
+                id=item.get('strategy_id'), user=user
+            ).first()
+            if not strategy:
+                continue
+            weight = float(item.get('weight', 0)) / total_weight
+            try:
+                bt = StrategyService.run_backtest(
+                    strategy, start_date=start_date, end_date=end_date, user=user
+                )
+                curves.append({
+                    'strategy_id': strategy.id,
+                    'name': strategy.name,
+                    'weight': weight,
+                    'equity_curve': bt.equity_curve,
+                    'total_return': float(bt.total_return),
+                    'sharpe_ratio': float(bt.sharpe_ratio or 0),
+                    'max_drawdown': float(bt.max_drawdown),
+                })
+            except Exception as e:
+                logger.warning(f'组合成员 {strategy.name} 回测失败: {e}')
+
+        if not curves:
+            raise StrategyError('组合回测无有效结果')
+
+        # 聚合权益曲线：按时间对齐
+        time_map = {}
+        for c in curves:
+            capital_per = initial_capital * c['weight']
+            for ts, val in c['equity_curve']:
+                time_map.setdefault(ts, 0)
+                time_map[ts] += capital_per * (val / initial_capital if initial_capital else 1)
+
+        timestamps = sorted(time_map.keys())
+        agg_curve = [(ts, time_map[ts]) for ts in timestamps]
+
+        final_capital = agg_curve[-1][1] if agg_curve else initial_capital
+        total_return = (final_capital - initial_capital) / initial_capital if initial_capital else 0
+
+        return {
+            'portfolio_id': portfolio.id,
+            'name': portfolio.name,
+            'initial_capital': initial_capital,
+            'final_capital': round(final_capital, 4),
+            'total_return': round(total_return, 6),
+            'equity_curve': agg_curve,
+            'members': curves,
+        }
+
+    # ========== 策略对比分析 ==========
+    @staticmethod
+    def compare_strategies(strategy_ids: List[int], start_date: datetime, end_date: datetime,
+                           user=None) -> List[Dict]:
+        """多策略回测结果对比"""
+        from apps.strategy.models import StrategyConfig
+
+        results = []
+        strategies = StrategyConfig.objects.filter(id__in=strategy_ids, user=user)
+        for strategy in strategies:
+            try:
+                bt = StrategyService.run_backtest(
+                    strategy, start_date=start_date, end_date=end_date, user=user
+                )
+                results.append({
+                    'strategy_id': strategy.id,
+                    'name': strategy.name,
+                    'strategy_type': strategy.strategy_type,
+                    'symbols': strategy.symbols,
+                    'total_return': float(bt.total_return),
+                    'annual_return': float(bt.annual_return or 0),
+                    'sharpe_ratio': float(bt.sharpe_ratio or 0),
+                    'max_drawdown': float(bt.max_drawdown),
+                    'win_rate': float(bt.win_rate),
+                    'total_trades': bt.total_trades,
+                    'profit_factor': float(bt.profit_factor or 0),
+                    'equity_curve': bt.equity_curve,
+                })
+            except Exception as e:
+                results.append({
+                    'strategy_id': strategy.id,
+                    'name': strategy.name,
+                    'error': str(e),
+                })
+        return results

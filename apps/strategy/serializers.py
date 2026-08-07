@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import StrategyConfig, FactorDefinition, SignalRecord, BacktestResult
+from .models import StrategyConfig, FactorDefinition, SignalRecord, BacktestResult, StrategyPortfolio
 
 
 class FactorDefinitionSerializer(serializers.ModelSerializer):
@@ -44,3 +44,21 @@ class BacktestResultSerializer(serializers.ModelSerializer):
     class Meta:
         model = BacktestResult
         fields = '__all__'
+
+
+class StrategyPortfolioSerializer(serializers.ModelSerializer):
+    strategies_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StrategyPortfolio
+        fields = '__all__'
+        extra_kwargs = {'user': {'read_only': True}}
+
+    def get_strategies_display(self, obj):
+        return [
+            {
+                'strategy_id': s.get('strategy_id'),
+                'weight': s.get('weight'),
+            }
+            for s in (obj.strategies or [])
+        ]

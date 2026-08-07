@@ -66,6 +66,7 @@
           <el-button size="small" @click="runSignals(row.id)">生成信号</el-button>
           <el-button size="small" type="danger" @click="executeSignals(row.id)">执行</el-button>
           <el-button size="small" @click="showBacktest(row)">回测</el-button>
+          <el-button size="small" type="info" @click="showOptimize(row)">优化</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -230,6 +231,69 @@
         <el-button type="primary" @click="runBacktest" :loading="btLoading">运行</el-button>
       </template>
     </el-dialog>
+
+    <!-- 优化弹窗 -->
+    <el-dialog v-model="optVisible" title="策略优化" width="620px">
+      <el-tabs v-model="optTab">
+        <el-tab-pane label="参数优化（网格搜索）" name="params">
+          <el-form label-width="110px">
+            <el-form-item label="参数网格">
+              <div v-for="(g, idx) in gridRows" :key="idx" class="grid-row">
+                <el-input v-model="g.key" placeholder="参数名，如 vol_ratio" style="width:180px" />
+                <el-input v-model="g.values" placeholder="取值，逗号分隔，如 1.5,1.8,2.0" style="flex:1" />
+                <el-button type="danger" text @click="gridRows.splice(idx, 1)">移除</el-button>
+              </div>
+              <el-button size="small" type="primary" text @click="addGridRow">+ 添加参数</el-button>
+            </el-form-item>
+            <el-form-item label="开始日期">
+              <el-date-picker v-model="optStart" type="date" value-format="YYYY-MM-DD" />
+            </el-form-item>
+            <el-form-item label="结束日期">
+              <el-date-picker v-model="optEnd" type="date" value-format="YYYY-MM-DD" />
+            </el-form-item>
+          </el-form>
+          <el-button type="primary" :loading="optLoading" @click="runParamOptimize">开始网格搜索</el-button>
+          <el-table v-if="optResults.length" :data="optResults" border stripe size="small" style="margin-top:12px" max-height="260">
+            <el-table-column label="参数" min-width="160">
+              <template #default="{ row }">
+                <el-tag v-for="(v, k) in row.params" :key="k" size="small" style="margin-right:4px">{{ k }}={{ v }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="收益" width="90">
+              <template #default="{ row }">{{ (row.total_return * 100).toFixed(2) }}%</template>
+            </el-table-column>
+            <el-table-column label="夏普" width="80">
+              <template #default="{ row }">{{ row.sharpe_ratio.toFixed(2) }}</template>
+            </el-table-column>
+            <el-table-column label="胜率" width="80">
+              <template #default="{ row }">{{ (row.win_rate * 100).toFixed(1) }}%</template>
+            </el-table-column>
+            <el-table-column label="交易数" width="80">
+              <template #default="{ row }">{{ row.total_trades }}</template>
+            </el-table-column>
+          </el-table>
+        </el-tab-pane>
+        <el-tab-pane label="因子权重优化" name="weights">
+          <el-form label-width="110px">
+            <el-form-item label="开始日期">
+              <el-date-picker v-model="wtStart" type="date" value-format="YYYY-MM-DD" />
+            </el-form-item>
+            <el-form-item label="结束日期">
+              <el-date-picker v-model="wtEnd" type="date" value-format="YYYY-MM-DD" />
+            </el-form-item>
+            <el-form-item label="迭代次数">
+              <el-input-number v-model="wtIterations" :min="5" :max="50" />
+            </el-form-item>
+          </el-form>
+          <el-button type="primary" :loading="wtLoading" @click="runWeightOptimize">开始权重优化</el-button>
+          <div v-if="wtResult" class="wt-result">
+            <el-tag v-for="(v, k) in wtResult.weights" :key="k" size="small" style="margin:4px">
+              {{ k }}: {{ v }}
+            </el-tag>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+    </el-dialog>
   </div>
 </template>
 
@@ -239,6 +303,7 @@ import {
   getStrategies, createStrategy, updateStrategy, deleteStrategy,
   activateStrategy, pauseStrategy, runSignals as runSignalsApi,
   executeSignals as execSignalsApi, runBacktest as runBacktestApi,
+  optimizeParams as optimizeParamsApi, optimizeWeights as optimizeWeightsApi,
 } from '@/api/strategy'
 import { getInstruments as getMarketInstruments } from '@/api/market'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -269,6 +334,21 @@ const btLoading = ref(false)
 const btStart = ref('')
 const btEnd = ref('')
 const btStrategyId = ref(null)
+
+// 优化相关
+const optVisible = ref(false)
+const optTab = ref('params')
+const optStrategyId = ref(null)
+const optStart = ref('')
+const optEnd = ref('')
+const optLoading = ref(false)
+const optResults = ref([])
+const gridRows = ref([])
+const wtStart = ref('')
+const wtEnd = ref('')
+const wtIterations = ref(10)
+const wtLoading = ref(false)
+const wtResult = ref(null)
 
 // 筛选与分页
 const filters = ref({ keyword: '', strategy_type: '', inst_type: '', status: '', direction: '' })
@@ -346,6 +426,60 @@ const onReset = () => {
   load()
 }
 
+const showOptimize = (row) => {
+  optStrategyId.value = row.id
+  optTab.value = 'params'
+  optResults.value = []
+  wtResult.value = null
+  gridRows.value = [{ key: 'vol_ratio', values: '1.5,1.8,2.0' }]
+  optStart.value = ''
+  optEnd.value = ''
+  wtStart.value = ''
+  wtEnd.value = ''
+  optVisible.value = true
+}
+
+const addGridRow = () => { gridRows.value.push({ key: '', values: '' }) }
+
+const buildParamGrid = () => {
+  const grid = {}
+  for (const g of gridRows.value) {
+    if (!g.key || !g.values) continue
+    grid[g.key] = g.values.split(',').map(s => s.trim()).filter(Boolean).map(s => {
+      const n = Number(s)
+      return isNaN(n) ? s : n
+    })
+  }
+  return grid
+}
+
+const runParamOptimize = async () => {
+  const grid = buildParamGrid()
+  if (!Object.keys(grid).length) { ElMessage.warning('请配置参数网格'); return }
+  optLoading.value = true
+  try {
+    const res = await optimizeParamsApi(optStrategyId.value, {
+      param_grid: grid, start_date: optStart.value || undefined, end_date: optEnd.value || undefined,
+    })
+    optResults.value = res.results || []
+    ElMessage.success(`网格搜索完成，共 ${optResults.value.length} 组结果`)
+  } catch (e) { ElMessage.error(e.message) }
+  optLoading.value = false
+}
+
+const runWeightOptimize = async () => {
+  wtLoading.value = true
+  try {
+    const res = await optimizeWeightsApi(optStrategyId.value, {
+      start_date: wtStart.value || undefined, end_date: wtEnd.value || undefined,
+      iterations: wtIterations.value,
+    })
+    wtResult.value = res
+    ElMessage.success('权重优化完成')
+  } catch (e) { ElMessage.error(e.message) }
+  wtLoading.value = false
+}
+
 const openDialog = (row) => {
   if (row) {
     form.value = { ...row, symbols: (row.symbols || []).slice(), params: mergeVolumeParams(row.params) }
@@ -413,4 +547,6 @@ onMounted(load)
 .filter-bar :deep(.el-card__body) { padding: 16px 16px 0; }
 .pager { margin-top: 16px; justify-content: flex-end; display: flex; }
 .hint { color: #909399; font-size: 12px; margin-left: 8px; }
+.grid-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; width: 100%; }
+.wt-result { margin-top: 16px; padding: 12px; background: #f5f7fa; border-radius: 6px; }
 </style>

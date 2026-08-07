@@ -10,8 +10,19 @@ export function pauseStrategy(id) { return api.post(`/strategy/configs/${id}/pau
 export function runSignals(id) { return api.post(`/strategy/configs/${id}/run_signals/`) }
 export function executeSignals(id) { return api.post(`/strategy/configs/${id}/execute_signals/`) }
 export function runBacktest(id, data) { return api.post(`/strategy/configs/${id}/backtest/`, data) }
+export function optimizeParams(id, data) { return api.post(`/strategy/configs/${id}/optimize_params/`, data) }
+export function optimizeWeights(id, data) { return api.post(`/strategy/configs/${id}/optimize_weights/`, data) }
+export function compareStrategies(data) { return api.post('/strategy/configs/compare/', data) }
+
+export function getPortfolios(params) { return api.get('/strategy/portfolios/', { params }) }
+export function createPortfolio(data) { return api.post('/strategy/portfolios/', data) }
+export function updatePortfolio(id, data) { return api.put(`/strategy/portfolios/${id}/`, data) }
+export function deletePortfolio(id) { return api.delete(`/strategy/portfolios/${id}/`) }
+export function runPortfolioBacktest(id, data) { return api.post(`/strategy/portfolios/${id}/backtest/`, data) }
 
 export function getFactors(params) { return api.get('/strategy/factors/', { params }) }
+export function createFactor(data) { return api.post('/strategy/factors/', data) }
+export function updateFactor(id, data) { return api.put(`/strategy/factors/${id}/`, data) }
 export function calculateFactor(data) { return api.post('/strategy/factors/calculate/', data) }
 
 export function getSignals(params) { return api.get('/strategy/signals/', { params }) }

@@ -8,6 +8,7 @@
           <el-option v-for="b in bars" :key="b" :label="b" :value="b" />
         </el-select>
         <el-button type="primary" :icon="Cpu" :loading="calcLoading" @click="calculate" style="margin-left:8px">计算因子</el-button>
+        <el-button type="success" :icon="Plus" @click="openCustomDialog" style="margin-left:8px">自定义因子</el-button>
       </div>
     </div>
 
@@ -43,14 +44,38 @@
         <el-table-column prop="detail" label="详情" show-overflow-tooltip />
       </el-table>
     </el-card>
+
+    <!-- 自定义因子弹窗 -->
+    <el-dialog v-model="customVisible" title="自定义因子" width="560px">
+      <el-form label-width="80px">
+        <el-form-item label="因子名称">
+          <el-input v-model="customForm.name" placeholder="如: my_momentum" />
+        </el-form-item>
+        <el-form-item label="显示名称">
+          <el-input v-model="customForm.display_name" placeholder="如: 自定义动量" />
+        </el-form-item>
+        <el-form-item label="计算公式">
+          <el-input v-model="customForm.formula" type="textarea" :rows="3"
+            placeholder="pandas表达式，基于列 close/high/low/open/volume&#10;示例: close/close.rolling(20).mean()-1" />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="customForm.description" type="textarea" :rows="2" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="customVisible = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="saveCustom">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { getFactors, calculateFactor } from '@/api/strategy'
+import { getFactors, calculateFactor, createFactor, updateFactor } from '@/api/strategy'
 import InstrumentSelect from '@/components/InstrumentSelect.vue'
 import { ElMessage } from 'element-plus'
+import { Plus } from '@element-plus/icons-vue'
 
 const tableData = ref([])
 const loading = ref(false)
@@ -58,6 +83,10 @@ const calcLoading = ref(false)
 const calcResults = ref([])
 const instId = ref('BTC-USDT')
 const bar = ref('1H')
+
+const customVisible = ref(false)
+const saving = ref(false)
+const customForm = ref({ name: '', display_name: '', formula: '', description: '' })
 const bars = ['1m', '5m', '15m', '30m', '1H', '4H', '1D']
 
 const load = async () => {
@@ -77,6 +106,33 @@ const calculate = async () => {
     calcResults.value = res.results || res.factors || res || []
   } catch (e) { ElMessage.error(e.message) }
   calcLoading.value = false
+}
+
+const openCustomDialog = () => {
+  customForm.value = { name: '', display_name: '', formula: '', description: '' }
+  customVisible.value = true
+}
+
+const saveCustom = async () => {
+  if (!customForm.value.name || !customForm.value.formula) {
+    ElMessage.warning('请填写因子名称和计算公式'); return
+  }
+  saving.value = true
+  try {
+    await createFactor({
+      name: customForm.value.name,
+      display_name: customForm.value.display_name || customForm.value.name,
+      factor_type: 'custom',
+      formula: customForm.value.formula,
+      description: customForm.value.description,
+      is_custom: true,
+      is_active: true,
+    })
+    ElMessage.success('自定义因子已保存')
+    customVisible.value = false
+    load()
+  } catch (e) { ElMessage.error(e.message) }
+  saving.value = false
 }
 
 onMounted(load)

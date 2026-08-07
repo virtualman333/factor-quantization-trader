@@ -100,9 +100,15 @@ DATABASES = {
         'PASSWORD': env('MYSQL_PASSWORD', default='factor'),
         'HOST': env('MYSQL_HOST', default='127.0.0.1'),
         'PORT': env('MYSQL_PORT', default='3306'),
+        'CONN_MAX_AGE': 60,
+        'CONN_HEALTH_CHECKS': True,
         'OPTIONS': {
             'charset': 'utf8mb4',
             'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+            # 长耗时操作（回测/优化）时保持连接活跃
+            'connect_timeout': 10,
+            'read_timeout': 300,
+            'write_timeout': 300,
         },
     }
 }
