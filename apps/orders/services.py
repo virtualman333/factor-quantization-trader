@@ -204,6 +204,106 @@ class OrderService:
         return count
 
     @staticmethod
+    def place_algo(inst_id: str, side: str, sz: str, td_mode: str = 'cash',
+                   ord_type: str = 'conditional', trigger_px: str = '',
+                   px: str = '', tp_trigger_px: str = '', tp_order_px: str = '',
+                   sl_trigger_px: str = '', sl_order_px: str = '',
+                   source: str = 'algo', user=None) -> dict:
+        """条件单/止盈止损单（OKX Algo 交易）"""
+        from core.okx_client import get_okx_client
+        from apps.account.models import OKXCredential
+
+        client = get_okx_client(user=user)
+        env = OKXCredential.objects.filter(user=user).first()
+        td = td_mode or (env.name if env else 'cash')
+
+        result = client.place_algo_order(
+            inst_id=inst_id, td_mode=td, side=side, sz=str(sz),
+            ord_type=ord_type, trigger_px=str(trigger_px) if trigger_px else '',
+            px=str(px) if px else '',
+            tp_trigger_px=str(tp_trigger_px) if tp_trigger_px else '',
+            tp_order_px=str(tp_order_px) if tp_order_px else '',
+            sl_trigger_px=str(sl_trigger_px) if sl_trigger_px else '',
+            sl_order_px=str(sl_order_px) if sl_order_px else '',
+        )
+        return {'result': result, 'type': 'algo'}
+
+    @staticmethod
+    def place_twap(inst_id: str, side: str, total_sz: str, slices: int = 5,
+                   interval: int = 60, td_mode: str = 'cash', user=None) -> dict:
+        """TWAP 时间加权算法单：拆分为 N 个子单按时间间隔下单"""
+        from core.okx_client import get_okx_client
+        from apps.account.models import OKXCredential
+
+        total = float(total_sz)
+        if total <= 0 or slices <= 0:
+            raise ValueError('数量或切片数必须大于0')
+
+        client = get_okx_client(user=user)
+        env = OKXCredential.objects.filter(user=user).first()
+        td = td_mode or (env.name if env else 'cash')
+        per_slice = round(total / slices, 8)
+
+        result = client.place_order(inst_id=inst_id, td_mode=td, side=side,
+                                    sz=str(per_slice), ord_type='market', px='')
+        for i in range(1, slices):
+            OrderLog.objects.create(
+                user=user,
+                order=None,
+                action='twap_scheduled',
+                detail={
+                    'inst_id': inst_id, 'side': side, 'sz': str(per_slice),
+                    'interval': interval, 'slot': i,
+                },
+            )
+        return {
+            'result': result,
+            'type': 'twap',
+            'total_slices': slices,
+            'per_slice': per_slice,
+            'interval_seconds': interval,
+            'scheduled_logs': slices - 1,
+        }
+
+    @staticmethod
+    def place_iceberg(inst_id: str, side: str, total_sz: str, display_sz: str,
+                      slices: int = 5, px: str = '', td_mode: str = 'cash',
+                      user=None) -> dict:
+        """冰山算法单：每次只暴露部分数量"""
+        from core.okx_client import get_okx_client
+        from apps.account.models import OKXCredential
+
+        total = float(total_sz)
+        if total <= 0 or slices <= 0:
+            raise ValueError('数量或切片数必须大于0')
+
+        client = get_okx_client(user=user)
+        env = OKXCredential.objects.filter(user=user).first()
+        td = td_mode or (env.name if env else 'cash')
+        per_slice = round(total / slices, 8)
+
+        result = client.place_order(inst_id=inst_id, td_mode=td, side=side,
+                                    sz=str(per_slice), ord_type='limit' if px else 'market',
+                                    px=px)
+        for i in range(1, slices):
+            OrderLog.objects.create(
+                user=user,
+                order=None,
+                action='iceberg_scheduled',
+                detail={
+                    'inst_id': inst_id, 'side': side, 'sz': str(per_slice),
+                    'px': px, 'slot': i,
+                },
+            )
+        return {
+            'result': result,
+            'type': 'iceberg',
+            'total_slices': slices,
+            'per_slice': per_slice,
+            'display_sz': display_sz,
+        }
+
+    @staticmethod
     def place_market_close(inst_id: str, sz: str, side: str = '',
                            td_mode: str = 'cash', source: str = 'strategy',
                            user=None) -> Dict:

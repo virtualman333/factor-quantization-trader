@@ -180,6 +180,31 @@ class OKXClient:
         """批量下单"""
         return self._safe_call(self.trade.place_multiple_orders, orders_data=orders)
 
+    def place_algo_order(self, inst_id: str, td_mode: str, side: str,
+                         sz: str, ord_type: str = 'conditional',
+                         trigger_px: str = '', px: str = '',
+                         tp_trigger_px: str = '', tp_order_px: str = '',
+                         sl_trigger_px: str = '', sl_order_px: str = '') -> Dict:
+        """条件单/止盈止损单（OKX Algo 交易）"""
+        params = {
+            'instId': inst_id,
+            'tdMode': td_mode,
+            'side': side,
+            'sz': sz,
+            'ordType': ord_type,
+        }
+        if trigger_px:
+            params['triggerPx'] = trigger_px
+        if px:
+            params['px'] = px
+        if tp_trigger_px:
+            params['tpTriggerPx'] = tp_trigger_px
+            params['tpOrdPx'] = tp_order_px or '-1'
+        if sl_trigger_px:
+            params['slTriggerPx'] = sl_trigger_px
+            params['slOrdPx'] = sl_order_px or '-1'
+        return self._safe_call(self.trade.place_algo_order, **params)
+
     def cancel_order(self, inst_id: str, ord_id: str = '', cl_ord_id: str = '') -> Dict:
         """撤销订单"""
         params = {'instId': inst_id}

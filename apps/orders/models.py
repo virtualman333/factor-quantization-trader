@@ -71,6 +71,46 @@ class TradeOrder(models.Model):
         return f'{self.ord_id or self.cl_ord_id} {self.side} {self.inst_id} {self.sz} @ {self.px or "MKT"} ({self.get_state_display()})'
 
 
+class OrderTemplate(models.Model):
+    """订单模板（快捷下单）"""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                              related_name='order_templates', verbose_name='所属用户',
+                              null=True, default=None)
+    name = models.CharField('模板名称', max_length=100)
+    inst_id = models.CharField('产品ID', max_length=50, blank=True,
+                                help_text='留空则适用任意品种')
+    side = models.CharField('买卖方向', max_length=10, choices=[
+        ('buy', '买入'), ('sell', '卖出'),
+    ], default='buy')
+    ord_type = models.CharField('订单类型', max_length=20, default='market')
+    sz = models.DecimalField('委托数量', max_digits=24, decimal_places=8, null=True, blank=True)
+    px = models.DecimalField('委托价格', max_digits=24, decimal_places=8, null=True, blank=True)
+    td_mode = models.CharField('交易模式', max_length=20, default='cash')
+    # 条件单参数
+    trigger_px = models.DecimalField('触发价', max_digits=24, decimal_places=8, null=True, blank=True)
+    tp_trigger_px = models.DecimalField('止盈触发价', max_digits=24, decimal_places=8, null=True, blank=True)
+    sl_trigger_px = models.DecimalField('止损触发价', max_digits=24, decimal_places=8, null=True, blank=True)
+    # 算法单参数
+    algo_type = models.CharField('算法类型', max_length=20, blank=True,
+                                  help_text='twap=时间加权 / iceberg=冰山')
+    total_sz = models.DecimalField('算法总数量', max_digits=24, decimal_places=8, null=True, blank=True)
+    slices = models.IntegerField('切片数量', null=True, blank=True,
+                                  help_text='TWAP/冰山拆分的子单数量')
+    interval = models.IntegerField('间隔秒数', null=True, blank=True)
+    description = models.TextField('描述', blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        db_table = 'trade_order_template'
+        verbose_name = '订单模板'
+        verbose_name_plural = verbose_name
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.name} ({self.side} {self.inst_id})'
+
+
 class OrderLog(models.Model):
     """订单操作日志"""
 
