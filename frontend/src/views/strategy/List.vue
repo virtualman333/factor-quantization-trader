@@ -70,6 +70,11 @@
             <span class="task-id">{{ row.task_id.slice(0, 8) }}…</span>
           </template>
         </el-table-column>
+        <el-table-column label="类型" width="100">
+          <template #default="{ row }">
+            <el-tag size="small" type="info">{{ row.task_type || '回测' }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="策略" min-width="130">
           <template #default="{ row }">
             {{ row.result?.strategy_name || row.strategy_name || `策略 #${row.strategy_id}` }}
@@ -127,17 +132,26 @@
       <el-table-column prop="initial_capital" label="初始资金" width="120" />
       <el-table-column prop="order_size_pct" label="仓位比例" width="100" />
       <el-table-column prop="max_positions" label="最大持仓" width="100" />
-      <el-table-column label="操作" width="420" fixed="right">
-
+      <el-table-column label="操作" width="200" fixed="right">
         <template #default="{ row }">
           <el-button size="small" type="primary" @click="openDialog(row)">编辑</el-button>
-          <el-button v-if="row.status !== 'active'" size="small" type="success" @click="activate(row.id)">激活</el-button>
+          <el-button
+            v-if="row.status !== 'active'"
+            size="small" type="success" @click="activate(row.id)"
+          >{{ row.status === 'draft' ? '激活' : '恢复' }}</el-button>
           <el-button v-if="row.status === 'active'" size="small" type="warning" @click="pause(row.id)">暂停</el-button>
-          <el-button size="small" @click="runSignals(row.id)">生成信号</el-button>
-          <el-button size="small" type="danger" @click="executeSignals(row.id)">执行</el-button>
-          <el-button size="small" @click="showBacktest(row)">回测</el-button>
-          <el-button size="small" type="info" @click="showOptimize(row)">优化</el-button>
-          <el-button size="small" type="danger" :icon="Delete" @click="remove(row)">删除</el-button>
+          <el-dropdown trigger="click" @command="(cmd) => handleMore(row, cmd)">
+            <el-button size="small">更多<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="signals">生成信号</el-dropdown-item>
+                <el-dropdown-item command="execute">执行信号</el-dropdown-item>
+                <el-dropdown-item command="backtest" divided>回测</el-dropdown-item>
+                <el-dropdown-item command="optimize">参数优化</el-dropdown-item>
+                <el-dropdown-item command="delete" divided><span style="color:#f56c6c">删除</span></el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </template>
       </el-table-column>
     </el-table>
@@ -396,7 +410,7 @@ import { useStrategyStore } from '@/stores/strategy'
 import { useConfirm } from '@/composables/useConfirm'
 import { useFormDraft } from '@/composables/useFormDraft'
 import { ElMessage } from 'element-plus'
-import { Plus, Search, RefreshLeft, Delete, Loading } from '@element-plus/icons-vue'
+import { Plus, Search, RefreshLeft, Delete, Loading, ArrowDown } from '@element-plus/icons-vue'
 
 const strategyStore = useStrategyStore()
 const { confirm } = useConfirm()
@@ -617,8 +631,23 @@ const runParamOptimize = async () => {
     const res = await optimizeParamsApi(optStrategyId.value, {
       param_grid: grid, start_date: optStart.value || undefined, end_date: optEnd.value || undefined,
     })
-    optResults.value = res.results || []
-    ElMessage.success(`网格搜索完成，共 ${optResults.value.length} 组结果`)
+    // 异步任务提交（202），加入任务列表轮询
+    if (res.submitted) {
+      btTasks.value.unshift({
+        task_id: res.task_id,
+        strategy_id: optStrategyId.value,
+        strategy_name: tableData.value.find((x) => x.id === optStrategyId.value)?.name,
+        task_type: '参数优化',
+        state: 'PENDING',
+        result: {},
+        created_at: new Date().toISOString(),
+      })
+      ElMessage.success('参数优化任务已提交，正在后台执行…')
+      startTaskPolling()
+    } else {
+      optResults.value = res.results || []
+      ElMessage.success(`网格搜索完成，共 ${optResults.value.length} 组结果`)
+    }
   } catch (e) { ElMessage.error(e.message) }
   optLoading.value = false
 }
@@ -630,8 +659,22 @@ const runWeightOptimize = async () => {
       start_date: wtStart.value || undefined, end_date: wtEnd.value || undefined,
       iterations: wtIterations.value,
     })
-    wtResult.value = res
-    ElMessage.success('权重优化完成')
+    if (res.submitted) {
+      btTasks.value.unshift({
+        task_id: res.task_id,
+        strategy_id: optStrategyId.value,
+        strategy_name: tableData.value.find((x) => x.id === optStrategyId.value)?.name,
+        task_type: '权重优化',
+        state: 'PENDING',
+        result: {},
+        created_at: new Date().toISOString(),
+      })
+      ElMessage.success('权重优化任务已提交，正在后台执行…')
+      startTaskPolling()
+    } else {
+      wtResult.value = res
+      ElMessage.success('权重优化完成')
+    }
   } catch (e) { ElMessage.error(e.message) }
   wtLoading.value = false
 }
@@ -698,16 +741,32 @@ const remove = async (row) => {
     load()
   } catch (e) { ElMessage.error(e.message) }
 }
-const runSignals = async (id) => { await runSignalsApi(id); ElMessage.success('信号已生成'); load() }
+const runSignals = async (id) => {
+  try { await runSignalsApi(id); ElMessage.success('信号已生成'); load() }
+  catch (e) { ElMessage.error(e.message) }
+}
 const executeSignals = async (id) => {
   try { await execSignalsApi(id); ElMessage.success('信号已执行') }
   catch (e) { ElMessage.error(e.message) }
 }
 
+const handleMore = (row, cmd) => {
+  if (cmd === 'signals') runSignals(row.id)
+  else if (cmd === 'execute') executeSignals(row.id)
+  else if (cmd === 'backtest') showBacktest(row)
+  else if (cmd === 'optimize') showOptimize(row)
+  else if (cmd === 'delete') remove(row)
+}
+
 const showBacktest = (row) => {
   btStrategyId.value = row.id
-  btStart.value = ''
-  btEnd.value = ''
+  // 默认最近30天
+  const end = new Date()
+  const start = new Date()
+  start.setDate(start.getDate() - 30)
+  const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  btStart.value = fmt(start)
+  btEnd.value = fmt(end)
   backtestVisible.value = true
 }
 

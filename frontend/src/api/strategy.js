@@ -33,6 +33,9 @@ export function getSignals(params) { return api.get('/strategy/signals/', { para
 export function executeSignal(id) { return api.post(`/strategy/signals/${id}/execute/`) }
 
 export function getBacktests(params) { return api.get('/strategy/backtests/', { params }) }
+export function getBacktestDetail(id) { return api.get(`/strategy/backtests/${id}/`) }
+export function runBacktestMonteCarlo(id, data) { return api.post(`/strategy/backtests/${id}/monte_carlo/`, data) }
+export function exportBacktestResultReport(id) { return api.get(`/strategy/backtests/${id}/export_report/`, { responseType: 'blob' }) }
 
 export function getInstruments(instType) { return api.get('/strategy/configs/instruments/', { params: { inst_type: instType } }) }
 

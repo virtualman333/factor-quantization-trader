@@ -16,9 +16,15 @@ class SignalRecordSerializer(serializers.ModelSerializer):
     pos_side_display = serializers.CharField(source='get_pos_side_display', read_only=True)
     strategy_name = serializers.CharField(source='strategy.name', read_only=True)
 
+    TD_MODE_LABELS = {'cash': '现金/现货', 'cross': '全仓合约', 'isolated': '逐仓合约'}
+    td_mode_display = serializers.SerializerMethodField()
+
     class Meta:
         model = SignalRecord
         fields = '__all__'
+
+    def get_td_mode_display(self, obj):
+        return self.TD_MODE_LABELS.get(obj.td_mode, obj.td_mode or '--')
 
 
 class StrategyConfigSerializer(serializers.ModelSerializer):

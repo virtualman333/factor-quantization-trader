@@ -196,7 +196,7 @@ class BalanceSnapshotViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['get'])
     def live(self, request):
-        """获取实时余额（直接从 OKX）"""
+        """获取实时余额（直接从 OKX，单次请求耗时低，保持同步）"""
         try:
             balance = AccountService.get_balance_from_api(user=request.user)
             return Response(balance)

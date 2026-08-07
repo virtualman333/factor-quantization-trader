@@ -28,6 +28,27 @@
       </div>
     </div>
 
+    <!-- 回测买卖点标记信息栏 -->
+    <el-alert v-if="backtestInfo" class="backtest-banner" type="warning" :closable="false" show-icon>
+      <template #title>
+        <div class="backtest-banner-content">
+          <span class="backtest-label">
+            <el-icon><DataLine /></el-icon>
+            回测标记：{{ backtestInfo.strategy_name }}
+          </span>
+          <span class="backtest-stat">收益
+            <b :style="{ color: parseFloat(backtestInfo.total_return) >= 0 ? '#67c23a' : '#f56c6c' }">
+              {{ (backtestInfo.total_return * 100).toFixed(2) }}%
+            </b>
+          </span>
+          <span class="backtest-stat">交易 {{ backtestInfo.total_trades }}次</span>
+          <span class="backtest-stat">胜率 {{ (backtestInfo.win_rate * 100).toFixed(1) }}%</span>
+          <span class="backtest-stat" v-if="backtestTrades.length">当前品种 {{ backtestTrades.length }}个标记</span>
+          <el-button size="small" text type="danger" :icon="Close" @click="clearBacktest">清除标记</el-button>
+        </div>
+      </template>
+    </el-alert>
+
     <!-- 多周期联动 / 品种对比面板 -->
     <el-card v-if="showInsights" style="margin-top:12px">
       <template #header>
@@ -148,15 +169,54 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { scrollKlines, fetchKlines as fetchApi } from '@/api/market'
+import { getBacktestDetail } from '@/api/strategy'
 import InstrumentSelect from '@/components/InstrumentSelect.vue'
 import { useConnectionStore } from '@/stores/connection'
 import { useRealtimeStore } from '@/stores/realtime'
 import { ElMessage } from 'element-plus'
-import { Download, Refresh, Mouse, Loading, Sunny, Moon } from '@element-plus/icons-vue'
-import { init, dispose } from 'klinecharts'
+import { Download, Refresh, Mouse, Loading, Sunny, Moon, Close, DataLine } from '@element-plus/icons-vue'
+import { init, dispose, registerOverlay } from 'klinecharts'
 import * as echarts from 'echarts'
 
+// ===== 注册买卖点标记 overlay（全局只注册一次） =====
+let tradeMarkerRegistered = false
+function ensureTradeMarkerRegistered() {
+  if (tradeMarkerRegistered) return
+  tradeMarkerRegistered = true
+  registerOverlay({
+    name: 'tradeMarker',
+    totalStep: 1,
+    needDefaultPointFigure: false,
+    createPointFigures: ({ overlay, coordinates }) => {
+      if (!coordinates || !coordinates.length) return []
+      const figures = []
+      const trades = overlay.extendData || []
+      coordinates.forEach((coord, i) => {
+        const trade = trades[i] || {}
+        const isBuy = trade.action === 'buy'
+        const color = isBuy ? '#26a69a' : '#ef5350'
+        // 买入标记在 K 线下方，卖出标记在上方
+        const y = isBuy ? coord.y + 22 : coord.y - 22
+        figures.push({
+          key: `marker_${i}`,
+          type: 'text',
+          attrs: { x: coord.x, y, text: isBuy ? '买' : '卖' },
+          styles: {
+            color: '#fff', size: 11, family: 'Arial', weight: 'bold',
+            backgroundColor: color, borderRadius: 3,
+            paddingLeft: 4, paddingTop: 2, paddingRight: 4, paddingBottom: 2,
+          },
+        })
+      })
+      return figures
+    },
+  })
+}
+
+const route = useRoute()
+const router = useRouter()
 const connectionStore = useConnectionStore()
 const realtimeStore = useRealtimeStore()
 const envLabel = computed(() => connectionStore.envLabel)
@@ -165,7 +225,7 @@ const envType = computed(() => (connectionStore.environment === 'live' ? 'danger
 const chartRef = ref(null)
 const loading = ref(false)
 const fetchLoading = ref(false)
-const instId = ref('BTC-USDT')
+const instId = ref(route.query.inst_id || 'BTC-USDT')
 const bar = ref('1H')
 const preloadSize = ref(1000)
 const bars = ['1m', '3m', '5m', '15m', '30m', '1H', '2H', '4H', '6H', '12H', '1D', '1W', '1M']
@@ -184,11 +244,17 @@ const miniCharts = {}
 const miniChartEls = {}
 const compareInst = ref('ETH-USDT')
 const compareLoading = ref(false)
-const compareChart = null
+let compareChart = null
 
 let chart = null
 let resizeObserver = null
 let realtimeUnsubscribe = null
+let subIndicatorPaneId = null
+
+// 回测买卖点标记状态
+const backtestId = ref(route.query.backtest_id ? Number(route.query.backtest_id) : null)
+const backtestInfo = ref(null)
+const backtestTrades = ref([])
 
 const dataSummary = ref(null)
 
@@ -275,6 +341,53 @@ const toChartData = (items) => {
     }))
 }
 
+// ---------- 回测买卖点标记 ----------
+const fetchBacktestDetail = async () => {
+  if (!backtestId.value) return
+  try {
+    const data = await getBacktestDetail(backtestId.value)
+    backtestInfo.value = data
+    // 按当前品种过滤交易明细
+    const allTrades = data.trade_detail || []
+    backtestTrades.value = allTrades.filter(t => t.symbol === instId.value)
+    if (backtestTrades.value.length === 0 && allTrades.length > 0) {
+      ElMessage.info(`回测共 ${allTrades.length} 笔交易，当前品种 ${instId.value} 无匹配`)
+    }
+  } catch (e) {
+    ElMessage.error(`加载回测数据失败: ${e.message}`)
+  }
+}
+
+const applyBacktestOverlay = () => {
+  if (!chart) return
+  // 先移除已有的买卖点标记
+  chart.removeOverlay({ name: 'tradeMarker' })
+  if (!backtestTrades.value.length) return
+  // 创建单个 overlay，points 为所有交易点，extendData 为交易明细数组
+  const points = backtestTrades.value.map(t => ({
+    timestamp: new Date(t.timestamp).getTime(),
+    value: parseFloat(t.price),
+  }))
+  chart.createOverlay({
+    name: 'tradeMarker',
+    points,
+    extendData: backtestTrades.value,
+    zLevel: 10,
+  })
+}
+
+const clearBacktest = () => {
+  if (chart) chart.removeOverlay({ name: 'tradeMarker' })
+  backtestId.value = null
+  backtestInfo.value = null
+  backtestTrades.value = []
+  // 清除 URL 中的回测参数
+  const query = { ...route.query }
+  delete query.backtest_id
+  delete query.inst_id
+  router.replace({ query })
+}
+
 // ---------- 主动加载初始数据（klinecharts v9 的 setLoadDataCallback 不会自动触发初次加载） ----------
 const initialLoad = async () => {
   try {
@@ -290,6 +403,8 @@ const initialLoad = async () => {
       chart.applyNewData(toChartData(items), res?.has_more ?? false)
       await nextTick()
       updateSummary()
+      // 应用回测买卖点标记
+      applyBacktestOverlay()
     } else if (res?.fetching) {
       ElMessage.info('正在从交易所拉取数据，请稍后再滑动加载')
     }
@@ -470,20 +585,20 @@ const applyMainIndicator = (val) => {
 const applySubIndicator = (val) => {
   const target = val || subIndicator.value
   if (!chart) return
-  // 清除现有副图（除主图外）
-  const panes = chart.getPanes()
-  for (const p of panes) {
-    if (p.id !== 'candle_pane') chart.removePane(p.id)
+  // 移除旧副图指标（v9 没有 getPane/removePane，用 removeIndicator + paneId 管理）
+  if (subIndicatorPaneId) {
+    chart.removeIndicator(subIndicatorPaneId)
+    subIndicatorPaneId = null
   }
   if (target === 'none') return
   const configs = {
-    macd: ['MACD', { height: 120, minHeight: 50 }],
-    kdj: ['KDJ', { height: 120, minHeight: 50 }],
-    rsi: ['RSI', { height: 120, minHeight: 50 }],
-    wr: ['WR', { height: 120, minHeight: 50 }],
+    macd: 'MACD', kdj: 'KDJ', rsi: 'RSI', wr: 'WR',
   }
-  const [name, opts] = configs[target]
-  chart.createIndicator(name, false, opts)
+  const name = configs[target]
+  if (!name) return
+  // 复用固定 paneId，避免切换时创建多个空 pane
+  subIndicatorPaneId = 'sub_indicator_pane'
+  chart.createIndicator(name, false, { id: subIndicatorPaneId, height: 120, minHeight: 50 })
 }
 
 // ---------- 多周期联动 ----------
@@ -535,7 +650,8 @@ const loadCompare = async () => {
     await nextTick()
     const el = document.querySelector('.compare-chart')
     if (!el) return
-    const chart = compareChart || echarts.init(el)
+    // 复用 echarts 实例，避免内存泄漏
+    if (!compareChart) compareChart = echarts.init(el)
     // 拉取两个品种数据
     const [mainRes, cmpRes] = await Promise.all([
       scrollKlines({ inst_id: instId.value, bar: bar.value, limit: 300, auto_fetch: 'false' }),
@@ -551,7 +667,7 @@ const loadCompare = async () => {
     const mainNorm = main.map(d => (parseFloat(d.close) / baseMain) * 100)
     const cmpNorm = cmp.map(d => (parseFloat(d.close) / baseCmp) * 100)
 
-    chart.setOption({
+    compareChart.setOption({
       animation: false,
       color: ['#409eff', '#f56c6c'],
       tooltip: { trigger: 'axis' },
@@ -602,6 +718,7 @@ const applyDrawMode = (val) => {
 //   - 向右滚动到边缘触发 type='backward'，data 有 timestamp
 const loadDataCallback = async (params) => {
   const { type, data, callback } = params
+  if (typeof callback !== 'function') return
   const scrollParams = {
     inst_id: instId.value,
     bar: bar.value,
@@ -641,6 +758,8 @@ const loadDataCallback = async (params) => {
 
     await nextTick()
     updateSummary()
+    // 数据加载后应用回测买卖点标记
+    if (items.length > 0) applyBacktestOverlay()
   } catch (e) {
     ElMessage.error(`加载失败: ${e.message}`)
     callback([], false)
@@ -654,6 +773,7 @@ const recreateChart = () => {
     chart = null
   }
   dataSummary.value = null
+  subIndicatorPaneId = null
   initChart()
   setupRealtime()
   initialLoad()
@@ -708,6 +828,14 @@ const setupResizeObserver = () => {
   resizeObserver.observe(chartRef.value)
 }
 
+// ---------- 品种变化时重新过滤回测交易 ----------
+watch(instId, (newVal) => {
+  if (backtestInfo.value) {
+    const allTrades = backtestInfo.value.trade_detail || []
+    backtestTrades.value = allTrades.filter(t => t.symbol === newVal)
+  }
+})
+
 // ---------- 品种/周期/环境变化时重建 ----------
 watch([instId, bar, () => connectionStore.environment], () => {
   recreateChart()
@@ -728,11 +856,16 @@ watch(insightMode, (v) => {
 // ---------- 生命周期 ----------
 onMounted(async () => {
   await nextTick()
+  ensureTradeMarkerRegistered()
+  // 如果从回测详情页跳转过来，先加载回测交易明细
+  if (backtestId.value) {
+    await fetchBacktestDetail()
+  }
   initChart()
   setupResizeObserver()
   setupRealtime()
   // klinecharts v9 不会自动触发 loadDataCallback 初始加载，需主动调用
-  initialLoad()
+  await initialLoad()
 })
 
 onBeforeUnmount(() => {
@@ -745,9 +878,14 @@ onBeforeUnmount(() => {
     dispose(chart)
     chart = null
   }
+  subIndicatorPaneId = null
   for (const p in miniCharts) {
     miniCharts[p]?.dispose()
     delete miniCharts[p]
+  }
+  if (compareChart) {
+    compareChart.dispose()
+    compareChart = null
   }
 })
 </script>
@@ -878,6 +1016,31 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
+/* ===== 回测买卖点标记信息栏 ===== */
+.backtest-banner {
+  margin-top: 12px;
+}
+.backtest-banner-content {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  width: 100%;
+}
+.backtest-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+}
+.backtest-stat {
+  font-size: 13px;
+  color: #606266;
+}
+.backtest-stat b {
+  font-size: 14px;
+}
+
 :deep(.el-card__body) {
   padding: 0;
 }
@@ -913,6 +1076,13 @@ onBeforeUnmount(() => {
   }
   .mini-chart {
     height: 70px;
+  }
+  .backtest-banner-content {
+    gap: 8px;
+    font-size: 12px;
+  }
+  .backtest-stat {
+    font-size: 12px;
   }
 }
 </style>

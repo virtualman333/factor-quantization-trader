@@ -199,20 +199,46 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
         from django_celery_results.models import TaskResult
 
         since = timezone.now() - timedelta(hours=2)
+        # 查询所有策略相关异步任务
+        strategy_tasks = [
+            'apps.strategy.tasks.run_backtest_task',
+            'apps.strategy.tasks.run_monte_carlo_task',
+            'apps.strategy.tasks.run_walk_forward_task',
+            'apps.strategy.tasks.run_optimize_params_task',
+            'apps.strategy.tasks.run_optimize_weights_task',
+            'apps.strategy.tasks.run_portfolio_backtest_task',
+            'apps.strategy.tasks.run_compare_strategies_task',
+            'apps.strategy.tasks.run_multi_symbol_backtest_task',
+        ]
         rows = TaskResult.objects.filter(
-            task_name='apps.strategy.tasks.run_backtest_task',
+            task_name__in=strategy_tasks,
             date_created__gte=since,
         ).order_by('-date_created')[:50]
+
+        # 任务名 -> 中文标签
+        TASK_LABELS = {
+            'run_backtest_task': '回测',
+            'run_monte_carlo_task': '蒙特卡洛',
+            'run_walk_forward_task': 'Walk-forward',
+            'run_optimize_params_task': '参数优化',
+            'run_optimize_weights_task': '权重优化',
+            'run_portfolio_backtest_task': '组合回测',
+            'run_compare_strategies_task': '策略对比',
+            'run_multi_symbol_backtest_task': '多品种回测',
+        }
 
         results = []
         for t in rows:
             strategy_id = None
+            backtest_id = None
             try:
                 kwargs = json.loads(t.task_kwargs or '{}')
-                strategy_id = kwargs.get('strategy_id')
+                strategy_id = kwargs.get('strategy_id') or kwargs.get('portfolio_id')
+                backtest_id = kwargs.get('backtest_id')
             except Exception:
                 pass
 
+            task_label = t.task_name.split('.')[-1]
             result_data = {}
             if t.result:
                 try:
@@ -220,9 +246,19 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
                 except Exception:
                     result_data = {'raw': t.result[:200]}
 
+            # 尝试补充策略名
+            strategy_name = None
+            if result_data.get('strategy_name'):
+                strategy_name = result_data['strategy_name']
+            elif result_data.get('result') and isinstance(result_data['result'], dict):
+                strategy_name = result_data['result'].get('name') or result_data['result'].get('strategy_name')
+
             results.append({
                 'task_id': t.task_id,
                 'strategy_id': strategy_id,
+                'backtest_id': backtest_id,
+                'strategy_name': strategy_name,
+                'task_type': TASK_LABELS.get(task_label, task_label),
                 'state': t.status,
                 'result': result_data,
                 'created_at': t.date_created.isoformat() if t.date_created else None,
@@ -430,6 +466,9 @@ class SignalRecordViewSet(viewsets.ReadOnlyModelViewSet):
     filterset_fields = ['strategy', 'inst_id', 'signal', 'is_executed']
 
     def get_queryset(self):
+        # superuser 可查看所有信号，普通用户仅自己的
+        if self.request.user.is_superuser:
+            return SignalRecord.objects.all()
         return SignalRecord.objects.filter(strategy__user=self.request.user)
 
     @action(detail=True, methods=['post'])
@@ -449,4 +488,43 @@ class BacktestResultViewSet(viewsets.ReadOnlyModelViewSet):
     filterset_fields = ['strategy']
 
     def get_queryset(self):
+        # superuser 可查看所有回测，普通用户仅自己的
+        if self.request.user.is_superuser:
+            return BacktestResult.objects.all()
         return BacktestResult.objects.filter(strategy__user=self.request.user)
+
+    @action(detail=True, methods=['post'])
+    def monte_carlo(self, request, pk=None):
+        """蒙特卡洛模拟：优先返回缓存，否则异步任务执行并立即返回 task_id"""
+        bt = self.get_object()
+        n_simulations = int(request.data.get('n_simulations', 1000))
+        # 优先使用缓存（已完成过且模拟次数一致）
+        cached = bt.monte_carlo or {}
+        if cached.get('status') == 'success' and cached.get('n_simulations') == n_simulations:
+            return Response({**cached.get('result', {}), 'from_cache': True})
+
+        # 同步小规模（<=300次）直接算；大规模异步
+        if n_simulations <= 300:
+            try:
+                result = StrategyService.run_monte_carlo(bt, n_simulations=n_simulations)
+                bt.monte_carlo = {'status': 'success', 'n_simulations': n_simulations, 'result': result}
+                bt.save(update_fields=['monte_carlo'])
+                return Response(result)
+            except Exception as e:
+                return Response({'error': str(e)}, status=500)
+
+        # 异步执行
+        from apps.strategy.tasks import run_monte_carlo_task
+        task = run_monte_carlo_task.delay(backtest_id=bt.id, n_simulations=n_simulations)
+        return Response({'task_id': str(task.id), 'submitted': True, 'backtest_id': bt.id}, status=202)
+
+    @action(detail=True, methods=['get'])
+    def export_report(self, request, pk=None):
+        """导出回测报告（HTML，可打印为PDF）"""
+        bt = self.get_object()
+        html = StrategyService.export_backtest_html(bt)
+        from django.http import HttpResponse
+        resp = HttpResponse(html, content_type='text/html; charset=utf-8')
+        safe_name = (bt.strategy.name or 'strategy').replace('"', '_')
+        resp['Content-Disposition'] = f'attachment; filename="backtest_{safe_name}_{bt.id}.html"'
+        return resp
