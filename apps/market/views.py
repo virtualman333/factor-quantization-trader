@@ -75,17 +75,18 @@ class KLineViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=['get'])
     def scroll(self, request):
         """按时间游标加载K线，支持左右滑动翻页。
-        自动通过 SystemConfig 获取当前交易环境过滤数据。
+        优先从数据库读取；数据库无数据时触发 Celery 后台异步拉取。
         参数:
           - inst_id: 品种ID (必填)
           - bar: K线周期 (必填)
           - before: 加载此时间戳之前的数据（向左滑动加载更旧数据）
           - after: 加载此时间戳之后的数据（向右滑动加载更新数据）
           - limit: 每次加载数量，默认500，最大1000
-          - auto_fetch: 当数据库无数据时是否自动从OKX拉取，默认true
+          - auto_fetch: 当数据库无数据时是否后台触发 OKX 拉取，默认 true
         返回:
           - results: K线数据列表
           - has_more: 是否还有更多数据
+          - fetching: 是否已触发后台拉取（前端可据此提示用户稍后再滑动）
           - environment: 当前交易环境
         """
         inst_id = request.query_params.get('inst_id', '')
@@ -127,6 +128,18 @@ class KLineViewSet(viewsets.ReadOnlyModelViewSet):
             klines = list(qs[:limit])
             klines = sorted(klines, key=lambda k: k.timestamp)
 
+        fetching = False
+
+        # 只在数据库完全无数据时，后台异步触发 OKX 拉取（不阻塞请求）
+        if auto_fetch and len(klines) == 0:
+            fetching = True
+            from apps.market.tasks import async_fetch_klines_task
+            async_fetch_klines_task.delay(
+                inst_id=inst_id, bar=bar, total=500,
+                before=str(before) if before else ''
+            )
+
+        # has_more 基于数据库实际状态
         has_more = False
         if before and klines:
             earliest = klines[0]
@@ -134,24 +147,7 @@ class KLineViewSet(viewsets.ReadOnlyModelViewSet):
                 environment=env, instrument__inst_id=inst_id, bar=bar,
                 timestamp__lt=earliest.timestamp
             ).exists()
-
-        if auto_fetch and len(klines) < limit:
-            if before and klines:
-                oldest_ts = str(int(klines[0].timestamp.timestamp() * 1000))
-                MarketDataService.fetch_klines_history(
-                    inst_id=inst_id, bar=bar, total=limit, before=oldest_ts
-                )
-                return self.scroll(request)
-            elif after or not before:
-                try:
-                    MarketDataService.fetch_klines(
-                        inst_id=inst_id, bar=bar, limit=limit, is_history=True
-                    )
-                    return self.scroll(request)
-                except Exception:
-                    pass
-
-        if after and klines:
+        elif after and klines:
             latest = klines[-1]
             has_more = KLine.objects.filter(
                 environment=env, instrument__inst_id=inst_id, bar=bar,
@@ -168,6 +164,7 @@ class KLineViewSet(viewsets.ReadOnlyModelViewSet):
         return Response({
             'results': serializer.data,
             'has_more': has_more,
+            'fetching': fetching,
             'environment': env,
         })
 

@@ -71,63 +71,53 @@
 - MySQL 8.0+
 - Redis 6.0+
 
-### 1. 克隆项目
+### 一键启动（Windows）
 
 ```bash
+# 双击或运行 start.bat，自动启动全部服务
+start.bat
+```
+
+脚本会自动完成：环境检查 → 依赖安装 → 数据库迁移 → Celery Worker → Celery Beat → Django 后端 → 前端 Vite。
+
+启动后访问 **http://localhost:5173** 即可使用。关闭窗口自动停止所有服务。
+
+如需手动停止：双击 `stop.bat`。
+
+### 手动启动（Linux/Mac）
+
+```bash
+# 1. 克隆 + 配置环境变量
 git clone <repo-url>
 cd factor-quantization-trader
-```
-
-### 2. 配置环境变量
-
-```bash
 cp .env.example .env
-# 编辑 .env 填入你的 OKX API 密钥和数据库/Redis 连接信息
-```
+# 编辑 .env
 
-### 3. 后端设置
-
-```bash
-# 创建虚拟环境
+# 2. 创建虚拟环境 + 安装依赖
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# venv\Scripts\activate   # Windows
-
-# 安装依赖
+source venv/bin/activate
 pip install -r requirements.txt
 
-# 创建数据库（MySQL）
+# 3. 创建数据库（MySQL）
 mysql -u root -p -e "CREATE DATABASE factor CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 
-# 运行迁移
+# 4. 数据库迁移 + 初始化
 python manage.py migrate
-
-# 初始化因子定义
 python manage.py shell < scripts/init_factors.py
 
-# 启动后端
-python manage.py runserver
+# 5. 启动所有服务
+python manage.py runserver &                    # Django 后端 (8000)
+celery -A config worker -l info &               # Celery Worker
+celery -A config beat -l info \
+  --scheduler django_celery_beat.schedulers:DatabaseScheduler &  # Celery Beat
+cd frontend && npm install && npm run dev &     # 前端 (5173)
 ```
 
-### 4. 前端设置
+或使用 `docker-compose`（见下方 Docker 部署）。
 
-```bash
-cd frontend
-npm install     # 或 pnpm install
-npm run dev     # 开发模式，默认 http://localhost:5173
-```
+### 配置 OKX 凭证
 
-### 5. Celery 任务（可选）
-
-```bash
-# 启动 Worker（执行异步任务）
-celery -A config worker -l info
-
-# 启动 Beat（定时调度）
-celery -A config beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
-```
-
-### 6. 配置 OKX 凭证
+### 配置 OKX 凭证
 
 1. 打开前端 → **系统设置** → 分别配置「模拟盘」和「实盘」的 API Key
 2. 在顶部导航栏下拉菜单中切换交易环境

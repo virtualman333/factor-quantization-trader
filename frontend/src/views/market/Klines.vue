@@ -277,40 +277,32 @@ const loadDataCallback = async (params) => {
   }
 
   try {
+    let res
     if (type === 'forward') {
-      // 向左滑：加载更旧的数据
       scrollParams.before = String(data.timestamp)
-      const res = await scrollKlines(scrollParams)
-      const items = res.data?.results || []
-      if (items.length > 0) {
-        callback(toChartData(items), res.data?.has_more ?? false)
-      } else {
-        callback([], false)
-      }
+      res = await scrollKlines(scrollParams)
     } else if (type === 'backward') {
-      // 向右滑：加载更新的数据
       scrollParams.after = String(data.timestamp)
-      const res = await scrollKlines(scrollParams)
-      const items = res.data?.results || []
-      if (items.length > 0) {
-        callback(toChartData(items), res.data?.has_more ?? false)
-      } else {
-        callback([], false)
-      }
+      res = await scrollKlines(scrollParams)
     } else {
-      // 初始加载
       scrollParams.limit = preloadSize.value
-      const res = await scrollKlines(scrollParams)
-      const items = res.data?.results || []
-      if (items.length > 0) {
-        callback(toChartData(items), res.data?.has_more ?? false)
-      } else {
-        // 无数据也可能需要从OKX拉取
-        callback([], false)
-      }
+      res = await scrollKlines(scrollParams)
     }
 
-    // 更新摘要
+    const items = res?.results || []
+    const hasMore = res?.has_more ?? false
+    const fetching = res?.fetching ?? false
+
+    if (fetching && items.length === 0) {
+      // 后台正在从 OKX 拉取，暂时无数据，提示稍后滑动
+      ElMessage.info('正在从交易所拉取数据，请稍后再滑动加载')
+      callback([], false)
+    } else if (items.length > 0) {
+      callback(toChartData(items), hasMore)
+    } else {
+      callback([], false)
+    }
+
     await nextTick()
     updateSummary()
   } catch (e) {
