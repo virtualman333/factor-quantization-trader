@@ -51,6 +51,8 @@ class OrderService:
         risk_mgr = RiskManager(user_id=user_id)
         order_value = float(sz) * (float(px) if px else 0)
         client = get_okx_client(user=user)
+        # 下单前检查凭证：未配置则给出友好中文提示，而不是裸抛 OKX 错误
+        client.require_credentials('下单')
 
         if ord_type == 'market' and not px:
             ticker = client.get_ticker(inst_id)
@@ -130,6 +132,7 @@ class OrderService:
     def cancel_order(ord_id: str, inst_id: str = '', user=None) -> Dict:
         """撤销订单"""
         client = get_okx_client(user=user)
+        client.require_credentials('撤单')
 
         # 查找本地订单
         trade_order = TradeOrder.objects.filter(
@@ -231,6 +234,7 @@ class OrderService:
         from apps.account.models import OKXCredential
 
         client = get_okx_client(user=user)
+        client.require_credentials('条件单')
         env = OKXCredential.objects.filter(user=user).first()
         td = td_mode or (env.name if env else 'cash')
 
@@ -257,6 +261,7 @@ class OrderService:
             raise ValueError('数量或切片数必须大于0')
 
         client = get_okx_client(user=user)
+        client.require_credentials('TWAP算法单')
         env = OKXCredential.objects.filter(user=user).first()
         td = td_mode or (env.name if env else 'cash')
         per_slice = round(total / slices, 8)
@@ -295,6 +300,7 @@ class OrderService:
             raise ValueError('数量或切片数必须大于0')
 
         client = get_okx_client(user=user)
+        client.require_credentials('冰山算法单')
         env = OKXCredential.objects.filter(user=user).first()
         td = td_mode or (env.name if env else 'cash')
         per_slice = round(total / slices, 8)

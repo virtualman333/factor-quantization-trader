@@ -186,9 +186,12 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { createOrder, batchCreateOrders, placeAlgoOrder, placeTwapOrder, placeIcebergOrder, getOrderTemplates, createOrderTemplate, deleteOrderTemplate, placeOrderByTemplate } from '@/api/orders'
 import InstrumentSelect from '@/components/InstrumentSelect.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+
+const router = useRouter()
 
 const activeTab = ref('normal')
 
@@ -219,7 +222,20 @@ const submit = async () => {
     await createOrder(cleanPayload(form))
     ElMessage.success('下单成功')
     reset()
-  } catch (e) { ElMessage.error(e.message) }
+  } catch (e) {
+    const msg = e.message || ''
+    if (msg.includes('凭证')) {
+      ElMessageBox.confirm(
+        '当前账号尚未配置 OKX API 凭证，无法下单。是否前往「系统设置-API凭证」配置？',
+        '需要配置凭证',
+        { confirmButtonText: '去配置', cancelButtonText: '取消', type: 'warning' }
+      ).then(() => {
+        router.push('/settings')
+      }).catch(() => {})
+    } else {
+      ElMessage.error(msg)
+    }
+  }
   submitting.value = false
 }
 

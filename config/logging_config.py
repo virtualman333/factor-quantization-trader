@@ -14,6 +14,34 @@ class SlowQueryFilter(logging.Filter):
     def filter(self, record):
         return getattr(record, 'duration', 0) >= 1.0
 
+
+class SafeTimedRotatingFileHandler(logging.handlers.TimedRotatingFileHandler):
+    """Windows 多进程安全的时间轮转 handler。
+    多个进程（Django/Celery Worker/Beat）持有同一日志文件时，
+    doRollover 的重命名会抛 PermissionError(32)。此 handler 捕获该异常并降级：
+    - 尝试重新打开文件继续写入当前文件
+    - 不再崩溃、不再刷屏
+    """
+
+    def doRollover(self):
+        try:
+            super().doRollover()
+        except PermissionError:
+            # 文件被其他进程占用，降级：重开文件继续写
+            try:
+                self.stream.close()
+                self.stream = self._open()
+            except Exception:
+                pass
+        except Exception:
+            # 其他异常同样降级，避免日志系统崩溃
+            try:
+                self.stream.close()
+                self.stream = self._open()
+            except Exception:
+                pass
+
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -90,7 +118,7 @@ LOGGING = {
         },
         'file_app': {
             'level': 'INFO',
-            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'class': 'config.logging_config.SafeTimedRotatingFileHandler',
             'filename': os.path.join(LOG_DIR, 'app.log'),
             'when': 'midnight',
             'interval': 1,
@@ -100,7 +128,7 @@ LOGGING = {
         },
         'file_error': {
             'level': 'ERROR',
-            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'class': 'config.logging_config.SafeTimedRotatingFileHandler',
             'filename': os.path.join(LOG_DIR, 'error.log'),
             'when': 'midnight',
             'interval': 1,
@@ -110,7 +138,7 @@ LOGGING = {
         },
         'file_warning': {
             'level': 'WARNING',
-            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'class': 'config.logging_config.SafeTimedRotatingFileHandler',
             'filename': os.path.join(LOG_DIR, 'warning.log'),
             'when': 'midnight',
             'interval': 1,
@@ -120,7 +148,7 @@ LOGGING = {
         },
         'file_request': {
             'level': 'INFO',
-            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'class': 'config.logging_config.SafeTimedRotatingFileHandler',
             'filename': os.path.join(LOG_DIR, 'request.log'),
             'when': 'midnight',
             'interval': 1,
@@ -130,7 +158,7 @@ LOGGING = {
         },
         'file_celery': {
             'level': 'INFO',
-            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'class': 'config.logging_config.SafeTimedRotatingFileHandler',
             'filename': os.path.join(LOG_DIR, 'celery.log'),
             'when': 'midnight',
             'interval': 1,
@@ -140,7 +168,7 @@ LOGGING = {
         },
         'file_celery_error': {
             'level': 'ERROR',
-            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'class': 'config.logging_config.SafeTimedRotatingFileHandler',
             'filename': os.path.join(LOG_DIR, 'celery_error.log'),
             'when': 'midnight',
             'interval': 1,
