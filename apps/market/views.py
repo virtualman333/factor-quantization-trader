@@ -9,6 +9,9 @@ from rest_framework.pagination import PageNumberPagination
 
 from django.utils import timezone
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 class KLinePagination(PageNumberPagination):
     """K线接口默认返回更多数据以支撑图表展示"""
@@ -233,14 +236,25 @@ class TickerViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['post'])
     def refresh(self, request):
-        """手动刷新行情"""
+        """手动刷新行情：先返回数据库中的快照（立即响应），后台异步从 OKX 刷新"""
         inst_id = request.data.get('inst_id')
         if not inst_id:
             return Response({'error': 'inst_id is required'}, status=400)
 
-        ticker = MarketDataService.sync_ticker(inst_id)
-        serializer = TickerSerializer(ticker)
-        return Response(serializer.data)
+        # 立即返回数据库现有快照（若无则返回空占位），不阻塞等待 OKX
+        ticker = Ticker.objects.filter(instrument__inst_id=inst_id).order_by('-updated_at').first()
+
+        # 后台异步刷新指定品种的 OKX 数据
+        try:
+            from apps.market.tasks import sync_tickers_task
+            sync_tickers_task.delay(inst_ids=[inst_id])
+        except Exception as e:
+            logger.warning(f'异步刷新行情失败: {e}')
+
+        if ticker:
+            serializer = TickerSerializer(ticker)
+            return Response({**serializer.data, 'refreshing': True})
+        return Response({'inst_id': inst_id, 'refreshing': True, 'error': '暂无本地行情，后台刷新中，请稍后重试'})
 
 
 class FundingRateViewSet(viewsets.ReadOnlyModelViewSet):

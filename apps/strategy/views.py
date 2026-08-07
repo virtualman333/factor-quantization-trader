@@ -232,26 +232,31 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def monte_carlo(self, request, pk=None):
-        """蒙特卡洛模拟：基于最近一次回测权益曲线"""
+        """蒙特卡洛模拟（异步任务执行）"""
         strategy = self.get_object()
         bt = strategy.backtests.order_by('-created_at').first()
         if not bt:
             return Response({'error': '请先运行回测'}, status=400)
         n_simulations = int(request.data.get('n_simulations', 1000))
-        result = StrategyService.run_monte_carlo(bt, n_simulations=n_simulations)
-        return Response(result)
+        from apps.strategy.tasks import run_monte_carlo_task
+        task = run_monte_carlo_task.delay(backtest_id=bt.id, n_simulations=n_simulations)
+        return Response({'task_id': str(task.id), 'submitted': True}, status=202)
 
     @action(detail=True, methods=['post'])
     def walk_forward(self, request, pk=None):
-        """Walk-forward 分析：滚动窗口参数稳定性"""
+        """Walk-forward 分析（异步任务执行）"""
         strategy = self.get_object()
         start_dt, end_dt = _parse_backtest_dates(request)
         window_days = int(request.data.get('window_days', 14))
-        result = StrategyService.run_walk_forward(
-            strategy, start_date=start_dt, end_date=end_dt,
-            window_days=window_days, user=request.user,
+        from apps.strategy.tasks import run_walk_forward_task
+        task = run_walk_forward_task.delay(
+            strategy_id=strategy.id,
+            start_date=start_dt.isoformat(),
+            end_date=end_dt.isoformat(),
+            window_days=window_days,
+            user_id=request.user.id if request.user.is_authenticated else None,
         )
-        return Response(result)
+        return Response({'task_id': str(task.id), 'submitted': True}, status=202)
 
     @action(detail=True, methods=['get'])
     def export_report(self, request, pk=None):
@@ -268,53 +273,54 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def multi_symbol_backtest(self, request, pk=None):
-        """多品种并行回测：每个标的分开回测对比"""
+        """多品种并行回测（异步任务执行）"""
         strategy = self.get_object()
         start_dt, end_dt = _parse_backtest_dates(request)
         fee_rate = float(request.data.get('fee_rate', 0.001))
         slippage = float(request.data.get('slippage', 0.001))
-        try:
-            result = StrategyService.run_multi_symbol_backtest(
-                strategy, start_date=start_dt, end_date=end_dt,
-                user=request.user, fee_rate=fee_rate, slippage=slippage,
-            )
-            return Response(result)
-        except StrategyError as e:
-            return Response({'error': str(e)}, status=400)
-        except Exception as e:
-            return Response({'error': str(e)}, status=500)
+        from apps.strategy.tasks import run_multi_symbol_backtest_task
+        task = run_multi_symbol_backtest_task.delay(
+            strategy_id=strategy.id,
+            start_date=start_dt.isoformat(),
+            end_date=end_dt.isoformat(),
+            fee_rate=fee_rate, slippage=slippage,
+            user_id=request.user.id if request.user.is_authenticated else None,
+        )
+        return Response({'task_id': str(task.id), 'submitted': True}, status=202)
 
     @action(detail=True, methods=['post'])
     def optimize_params(self, request, pk=None):
-        """策略参数优化器（网格搜索）"""
+        """策略参数优化器（网格搜索，异步任务执行）"""
         strategy = self.get_object()
         param_grid = request.data.get('param_grid')
         if not isinstance(param_grid, dict) or not param_grid:
             return Response({'error': 'param_grid 必填，如 {"vol_ratio": [1.5, 1.8, 2.0]}'}, status=400)
         start_dt, end_dt = _parse_backtest_dates(request)
-        try:
-            results = StrategyService.optimize_params(
-                strategy, start_date=start_dt, end_date=end_dt,
-                param_grid=param_grid, user=request.user,
-            )
-            return Response({'results': results})
-        except Exception as e:
-            return Response({'error': str(e)}, status=500)
+        from apps.strategy.tasks import run_optimize_params_task
+        task = run_optimize_params_task.delay(
+            strategy_id=strategy.id,
+            start_date=start_dt.isoformat(),
+            end_date=end_dt.isoformat(),
+            param_grid=param_grid,
+            user_id=request.user.id if request.user.is_authenticated else None,
+        )
+        return Response({'task_id': str(task.id), 'submitted': True}, status=202)
 
     @action(detail=True, methods=['post'])
     def optimize_weights(self, request, pk=None):
-        """因子权重自动优化（基于回测结果）"""
+        """因子权重自动优化（异步任务执行）"""
         strategy = self.get_object()
         start_dt, end_dt = _parse_backtest_dates(request)
         iterations = request.data.get('iterations', 10)
-        try:
-            result = StrategyService.optimize_factor_weights(
-                strategy, start_date=start_dt, end_date=end_dt,
-                user=request.user, iterations=int(iterations),
-            )
-            return Response(result)
-        except Exception as e:
-            return Response({'error': str(e)}, status=500)
+        from apps.strategy.tasks import run_optimize_weights_task
+        task = run_optimize_weights_task.delay(
+            strategy_id=strategy.id,
+            start_date=start_dt.isoformat(),
+            end_date=end_dt.isoformat(),
+            iterations=int(iterations),
+            user_id=request.user.id if request.user.is_authenticated else None,
+        )
+        return Response({'task_id': str(task.id), 'submitted': True}, status=202)
 
     @action(detail=False, methods=['post'])
     def compare(self, request):
@@ -323,13 +329,14 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
         if not strategy_ids:
             return Response({'error': 'strategy_ids 必填'}, status=400)
         start_dt, end_dt = _parse_backtest_dates(request)
-        try:
-            results = StrategyService.compare_strategies(
-                strategy_ids, start_date=start_dt, end_date=end_dt, user=request.user,
-            )
-            return Response({'results': results})
-        except Exception as e:
-            return Response({'error': str(e)}, status=500)
+        from apps.strategy.tasks import run_compare_strategies_task
+        task = run_compare_strategies_task.delay(
+            strategy_ids=strategy_ids,
+            start_date=start_dt.isoformat(),
+            end_date=end_dt.isoformat(),
+            user_id=request.user.id if request.user.is_authenticated else None,
+        )
+        return Response({'task_id': str(task.id), 'submitted': True}, status=202)
 
 
 class PortfolioViewSet(viewsets.ModelViewSet):
@@ -344,18 +351,17 @@ class PortfolioViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def backtest(self, request, pk=None):
-        """组合回测：按权重聚合权益"""
+        """组合回测（异步任务执行）"""
         portfolio = self.get_object()
         start_dt, end_dt = _parse_backtest_dates(request)
-        try:
-            result = StrategyService.run_portfolio_backtest(
-                portfolio, start_date=start_dt, end_date=end_dt, user=request.user,
-            )
-            return Response(result)
-        except StrategyError as e:
-            return Response({'error': str(e)}, status=400)
-        except Exception as e:
-            return Response({'error': str(e)}, status=500)
+        from apps.strategy.tasks import run_portfolio_backtest_task
+        task = run_portfolio_backtest_task.delay(
+            portfolio_id=portfolio.id,
+            start_date=start_dt.isoformat(),
+            end_date=end_dt.isoformat(),
+            user_id=request.user.id if request.user.is_authenticated else None,
+        )
+        return Response({'task_id': str(task.id), 'submitted': True}, status=202)
 
 
 class FactorDefinitionViewSet(viewsets.ModelViewSet):
@@ -382,8 +388,8 @@ class FactorDefinitionViewSet(viewsets.ModelViewSet):
         if not inst_id:
             return Response({'error': 'inst_id is required'}, status=400)
 
-        MarketDataService.fetch_klines(inst_id=inst_id, bar=bar, limit=200, user=request.user)
-        df = MarketDataService.get_klines_df(inst_id=inst_id, bar=bar, limit=200, user=request.user)
+        # DB 优先读取，数据不足时后台异步补齐（不阻塞）
+        df = MarketDataService.get_klines_cached(inst_id=inst_id, bar=bar, limit=200, user=request.user)
 
         if df.empty:
             return Response({'error': 'No K-line data'}, status=404)

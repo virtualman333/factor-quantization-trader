@@ -237,6 +237,32 @@ class MarketDataService:
         df.set_index('timestamp', inplace=True)
         return df
 
+    @staticmethod
+    def get_klines_cached(inst_id: str, bar: str = '1H', limit: int = 200,
+                          min_required: int = 60, user=None) -> 'pd.DataFrame':
+        """数据库优先读取K线；数据不足时后台异步拉取补齐并立即返回现有数据。
+        用户无需感知拉取过程：有数据立即返回，无数据触发 Celery 后台拉取（下次读取即有）。
+        """
+        import pandas as pd
+
+        env = MarketDataService._get_current_env(user=user)
+        count = KLine.objects.filter(
+            environment=env, instrument__inst_id=inst_id, bar=bar
+        ).count()
+
+        # 数据不足：触发异步拉取补齐（不阻塞请求），同时尝试同步拉取兜底
+        if count < min_required:
+            try:
+                from apps.market.tasks import async_fetch_klines_task
+                async_fetch_klines_task.delay(
+                    inst_id=inst_id, bar=bar, total=max(limit, 200)
+                )
+                logger.info(f'[{env}] {inst_id} {bar} 数据不足({count}<{min_required})，已触发异步补齐')
+            except Exception as e:
+                logger.warning(f'异步补齐 {inst_id} {bar} 失败: {e}')
+
+        return MarketDataService.get_klines_df(inst_id=inst_id, bar=bar, limit=limit, user=user)
+
     # ========== 行情快照 ==========
     @staticmethod
     def sync_ticker(inst_id: str, user=None) -> Ticker:

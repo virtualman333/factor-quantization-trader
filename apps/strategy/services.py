@@ -103,8 +103,10 @@ class StrategyService:
 
         for symbol in strategy.symbols:
             try:
-                MarketDataService.fetch_klines(inst_id=symbol, bar=strategy.bar, limit=200, user=user)
-                df = MarketDataService.get_klines_df(inst_id=symbol, bar=strategy.bar, limit=200, user=user)
+                # DB 优先读取，数据不足时后台异步补齐（不阻塞）
+                df = MarketDataService.get_klines_cached(
+                    inst_id=symbol, bar=strategy.bar, limit=200, min_required=60, user=user
+                )
 
                 if df.empty:
                     logger.warning(f'{symbol} 无K线数据，跳过信号生成')
@@ -166,8 +168,10 @@ class StrategyService:
 
         for symbol in strategy.symbols:
             try:
-                MarketDataService.fetch_klines(inst_id=symbol, bar=strategy.bar, limit=200, user=user)
-                df = MarketDataService.get_klines_df(inst_id=symbol, bar=strategy.bar, limit=200, user=user)
+                # DB 优先读取，数据不足时后台异步补齐（不阻塞）
+                df = MarketDataService.get_klines_cached(
+                    inst_id=symbol, bar=strategy.bar, limit=200, min_required=60, user=user
+                )
 
                 if len(df) < 50:
                     logger.warning(f'{symbol} K线数据不足，跳过')
@@ -329,8 +333,11 @@ class StrategyService:
 
         for symbol in strategy.symbols:
             try:
-                MarketDataService.fetch_klines(inst_id=symbol, bar=strategy.bar, limit=kline_limit, user=user)
-                df = MarketDataService.get_klines_df(inst_id=symbol, bar=strategy.bar, limit=kline_limit, user=user)
+                # DB 优先读取，数据不足时后台异步补齐（不阻塞）
+                df = MarketDataService.get_klines_cached(
+                    inst_id=symbol, bar=strategy.bar, limit=kline_limit,
+                    min_required=trend_ma_len + atr_len, user=user
+                )
                 if len(df) < trend_ma_len + atr_len:
                     logger.warning(f'{symbol} K线不足，跳过')
                     continue
@@ -634,8 +641,11 @@ class StrategyService:
         open_positions = TrackedPosition.objects.filter(strategy=strategy, is_open=True)
         for tp in open_positions:
             try:
-                MarketDataService.fetch_klines(inst_id=tp.inst_id, bar=strategy.bar, limit=limit, user=strategy.user)
-                df = MarketDataService.get_klines_df(inst_id=tp.inst_id, bar=strategy.bar, limit=limit, user=strategy.user)
+                # DB 优先读取，数据不足时后台异步补齐（不阻塞）
+                df = MarketDataService.get_klines_cached(
+                    inst_id=tp.inst_id, bar=strategy.bar, limit=limit,
+                    min_required=60, user=strategy.user
+                )
                 if df.empty:
                     continue
                 cur_price = float(df['close'].iloc[-1])

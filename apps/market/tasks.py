@@ -15,10 +15,13 @@ def sync_instruments_task():
 
 
 @shared_task
-def sync_tickers_task():
-    """定时同步行情快照"""
+def sync_tickers_task(inst_ids: list = None):
+    """同步行情快照（支持指定品种，缺省同步前50个活跃品种）"""
     from apps.market.models import Instrument
-    instruments = Instrument.objects.filter(is_active=True)[:50]
+    if inst_ids:
+        instruments = Instrument.objects.filter(is_active=True, inst_id__in=inst_ids)
+    else:
+        instruments = Instrument.objects.filter(is_active=True)[:50]
     for inst in instruments:
         try:
             MarketDataService.sync_ticker(inst.inst_id)
