@@ -71,7 +71,11 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
     serializer_class = StrategyConfigSerializer
 
     def get_queryset(self):
-        qs = StrategyConfig.objects.filter(user=self.request.user)
+        # superuser（管理员）可查看所有用户的策略，普通用户仅看自己的
+        if self.request.user.is_superuser:
+            qs = StrategyConfig.objects.all()
+        else:
+            qs = StrategyConfig.objects.filter(user=self.request.user)
         params = self.request.query_params
         keyword = params.get('keyword')
         if keyword:
