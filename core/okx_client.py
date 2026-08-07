@@ -218,13 +218,24 @@ class OKXClient:
             params['slOrdPx'] = sl_order_px or '-1'
         return self._safe_call(self.trade.place_algo_order, **params)
 
-    def cancel_order(self, inst_id: str, ord_id: str = '', cl_ord_id: str = '') -> Dict:
-        """撤销订单"""
+    def cancel_order(self, inst_id: str, ord_id: str = '', cl_ord_id: str = '',
+                     pos_side: str = '') -> Dict:
+        """撤销订单
+
+        注: 双向持仓模式（long_short_mode）下撤单必须携带 posSide，
+        SDK 的 cancel_order 不支持该参数，需走底层请求。
+        """
         params = {'instId': inst_id}
         if ord_id:
             params['ordId'] = ord_id
         if cl_ord_id:
             params['clOrdId'] = cl_ord_id
+        if pos_side:
+            from okx.consts import POST, CANCEL_ORDER
+            params['posSide'] = pos_side
+            return self._safe_call(
+                self.trade._request_with_params, POST, CANCEL_ORDER, params
+            )
         return self._safe_call(self.trade.cancel_order, **params)
 
     def cancel_batch_orders(self, orders: List[Dict]) -> Dict:

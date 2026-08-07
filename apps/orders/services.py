@@ -142,8 +142,22 @@ class OrderService:
         if not trade_order:
             raise OrderRejectedError(f'未找到活跃订单: {ord_id}')
 
+        inst_id = inst_id or trade_order.inst_id
+
+        # 双向持仓模式下撤单必须携带 posSide（long/short）：
+        # 先从 OKX 查询订单持仓方向，查询失败则按无持仓方向撤单
+        pos_side = ''
+        try:
+            info = client.get_order(inst_id=inst_id, ord_id=ord_id)
+            data = (info.get('data') or [{}])[0]
+            candidate = data.get('posSide', '') or ''
+            if candidate in ('long', 'short'):
+                pos_side = candidate
+        except Exception as e:
+            logger.warning(f'查询订单 {ord_id} posSide 失败: {e}')
+
         result = client.cancel_order(
-            inst_id=inst_id or trade_order.inst_id, ord_id=ord_id
+            inst_id=inst_id, ord_id=ord_id, pos_side=pos_side
         )
 
         if result['code'] == '0':
