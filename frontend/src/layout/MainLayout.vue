@@ -91,6 +91,21 @@
             </template>
           </el-dropdown>
 
+          <el-tooltip :content="realtimeStore.error || '实时行情通道（点击重连）'" placement="bottom">
+            <el-tag
+              size="small"
+              :type="realtimeStore.statusType"
+              class="status-tag"
+              @click="realtimeStore.reconnect"
+              :style="{ cursor: 'pointer' }"
+            >
+              <el-icon :size="12" :class="{ 'is-loading': realtimeStore.status === 'connecting' }">
+                <Connection />
+              </el-icon>
+              {{ realtimeStore.statusText }}
+            </el-tag>
+          </el-tooltip>
+
           <el-tooltip :content="connectionStore.lastError || '点击检测连接'" placement="bottom">
             <el-tag
               size="small"
@@ -131,14 +146,16 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Fold, ArrowDown, Loading, CircleCheck, CircleClose, User } from '@element-plus/icons-vue'
+import { Fold, ArrowDown, Loading, CircleCheck, CircleClose, Connection, User } from '@element-plus/icons-vue'
 import { useConnectionStore } from '@/stores/connection.js'
+import { useRealtimeStore } from '@/stores/realtime.js'
 import { useAuthStore } from '@/stores/auth.js'
 import { ElMessage } from 'element-plus'
 
 const route = useRoute()
 const router = useRouter()
 const connectionStore = useConnectionStore()
+const realtimeStore = useRealtimeStore()
 const authStore = useAuthStore()
 const isCollapse = ref(false)
 let pollTimer = null
@@ -161,6 +178,7 @@ function handleUserCommand(command) {
 
 onMounted(async () => {
   await connectionStore.init()
+  realtimeStore.ensureOpen()
   pollTimer = setInterval(() => {
     connectionStore.checkConnection().catch(() => {})
   }, 30000)
@@ -168,6 +186,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
+  realtimeStore.close()
 })
 </script>
 

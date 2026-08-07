@@ -1,0 +1,9 @@
+---
+description: 
+alwaysApply: true
+enabled: true
+updatedAt: 2026-08-07T12:00:11.670Z
+provider: 
+---
+
+1、自动提交代码，如果冲突，自动合并，合并原则为，保留双方特性。

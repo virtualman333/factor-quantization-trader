@@ -80,11 +80,13 @@
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { scrollKlines, fetchKlines as fetchApi } from '@/api/market'
 import { useConnectionStore } from '@/stores/connection'
+import { useRealtimeStore } from '@/stores/realtime'
 import { ElMessage } from 'element-plus'
 import { Download, Refresh, Mouse, Loading } from '@element-plus/icons-vue'
 import { init, dispose } from 'klinecharts'
 
 const connectionStore = useConnectionStore()
+const realtimeStore = useRealtimeStore()
 const envLabel = computed(() => connectionStore.envLabel)
 const envType = computed(() => (connectionStore.environment === 'live' ? 'danger' : 'primary'))
 
@@ -98,8 +100,45 @@ const bars = ['1m', '3m', '5m', '15m', '30m', '1H', '2H', '4H', '6H', '12H', '1D
 
 let chart = null
 let resizeObserver = null
+let realtimeUnsubscribe = null
 
 const dataSummary = ref(null)
+
+// ---------- 实时 K 线订阅 ----------
+const candleKey = computed(() =>
+  instId.value && bar.value ? `candle${bar.value}:${instId.value}` : ''
+)
+
+const onCandleUpdate = (payload) => {
+  if (!chart) return
+  const data = {
+    timestamp: payload.timestamp,
+    open: parseFloat(payload.open),
+    high: parseFloat(payload.high),
+    low: parseFloat(payload.low),
+    close: parseFloat(payload.close),
+    volume: parseFloat(payload.vol) || 0,
+  }
+  // timestamp 与最后一根相同则合并更新，更大则追加新 K 线
+  chart.updateData(data)
+  updateSummary()
+}
+
+const setupRealtime = () => {
+  if (realtimeUnsubscribe) {
+    realtimeUnsubscribe()
+    realtimeUnsubscribe = null
+  }
+  if (!candleKey.value) return
+  realtimeUnsubscribe = realtimeStore.subscribe(candleKey.value, onCandleUpdate)
+}
+
+const teardownRealtime = () => {
+  if (realtimeUnsubscribe) {
+    realtimeUnsubscribe()
+    realtimeUnsubscribe = null
+  }
+}
 
 // ---------- 数据摘要 ----------
 const updateSummary = () => {
@@ -319,6 +358,7 @@ const recreateChart = () => {
   }
   dataSummary.value = null
   initChart()
+  setupRealtime()
 }
 
 // ---------- 切换预加载数量 ----------
@@ -372,9 +412,11 @@ onMounted(async () => {
   await nextTick()
   initChart()
   setupResizeObserver()
+  setupRealtime()
 })
 
 onBeforeUnmount(() => {
+  teardownRealtime()
   if (resizeObserver) {
     resizeObserver.disconnect()
     resizeObserver = null

@@ -8,10 +8,10 @@ echo   因子量化交易系统 - 一键启动
 echo  ========================================
 echo.
 
-:: ========== 环境检查 ==========
+::: ========== 环境检查 ==========
 echo [1/6] 检查环境...
 
-:: Python
+::: Python
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo [错误] 未找到 Python，请先安装 Python 3.10+
@@ -19,7 +19,7 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: Node.js
+::: Node.js
 node --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo [错误] 未找到 Node.js，请先安装 Node.js 18+
@@ -27,15 +27,31 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: Redis
-redis-cli ping >nul 2>&1
+::: Redis
+set "REDIS_EXE="
+set "REDIS_CONF="
+if exist "C:\Program Files\Redis\redis-server.exe" (
+    set "REDIS_EXE=C:\Program Files\Redis\redis-server.exe"
+    if exist "C:\Program Files\Redis\redis.windows.conf" set "REDIS_CONF=C:\Program Files\Redis\redis.windows.conf"
+) else (
+    where redis-server >nul 2>&1 && set "REDIS_EXE=redis-server"
+)
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $c = New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',6379); $c.Close(); exit 0 } catch { exit 1 }"
 if %errorlevel% neq 0 (
-    echo [提示] Redis 未运行，正在启动 Redis...
-    start "Redis" redis-server
-    timeout /t 3 /nobreak >nul
+    if not defined REDIS_EXE (
+        echo [错误] 未找到 redis-server，请先安装 Redis 或将其加入 PATH
+    ) else (
+        echo [提示] Redis 未运行，正在后台启动 Redis...
+        if defined REDIS_CONF (
+            start "" /min "%REDIS_EXE%" "%REDIS_CONF%"
+        ) else (
+            start "" /min "%REDIS_EXE%"
+        )
+        timeout /t 3 /nobreak >nul
+    )
 )
 
-:: 检查虚拟环境
+::: 检查虚拟环境
 set VENV_DIR=venv
 if not exist "%VENV_DIR%\Scripts\activate.bat" (
     echo [提示] 未找到虚拟环境，正在创建...
@@ -43,14 +59,14 @@ if not exist "%VENV_DIR%\Scripts\activate.bat" (
 )
 call "%VENV_DIR%\Scripts\activate.bat"
 
-:: 检查依赖
+::: 检查依赖
 pip show django >nul 2>&1
 if %errorlevel% neq 0 (
     echo [提示] 正在安装 Python 依赖...
     pip install -r requirements.txt
 )
 
-:: 检查前端 node_modules
+::: 检查前端 node_modules
 if not exist "frontend\node_modules" (
     echo [提示] 正在安装前端依赖...
     cd frontend
@@ -61,40 +77,40 @@ if not exist "frontend\node_modules" (
 echo [√] 环境检查通过
 echo.
 
-:: ========== 数据库迁移 ==========
+::: ========== 数据库迁移 ==========
 echo [2/6] 数据库迁移...
 python manage.py migrate --noinput
 echo [√] 迁移完成
 echo.
 
-:: ========== 启动 Celery Worker ==========
+::: ========== 启动 Celery Worker ==========
 echo [3/6] 启动 Celery Worker...
 start "Celery Worker" cmd /c "title Celery Worker && venv\Scripts\activate.bat && celery -A config worker -l info --pool=solo"
 echo [√] Celery Worker 已启动
 echo.
 
-:: ========== 启动 Celery Beat ==========
+::: ========== 启动 Celery Beat ==========
 echo [4/6] 启动 Celery Beat...
 start "Celery Beat" cmd /c "title Celery Beat && venv\Scripts\activate.bat && celery -A config beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler"
 echo [√] Celery Beat 已启动
 echo.
 
-:: ========== 启动 Django 后端 ==========
+::: ========== 启动 Django 后端 ==========
 echo [5/6] 启动 Django 后端 (端口 8000)...
 start "Django Server" cmd /c "title Django Server && venv\Scripts\activate.bat && python manage.py runserver 0.0.0.0:8000"
 echo [√] Django 后端已启动
 echo.
 
-:: 等待 Django 就绪
+::: 等待 Django 就绪
 timeout /t 3 /nobreak >nul
 
-:: ========== 启动前端 ==========
+::: ========== 启动前端 ==========
 echo [6/6] 启动前端 Vite (端口 5173)...
 start "Vite Frontend" cmd /c "title Vite Frontend && cd frontend && npm run dev"
 echo [√] 前端已启动
 echo.
 
-:: ========== 完成 ==========
+::: ========== 完成 ==========
 echo.
 echo  ========================================
 echo   启动完成！
@@ -103,13 +119,14 @@ echo   前端:     http://localhost:5173
 echo   后端 API: http://localhost:8000/api/
 echo   Admin:   http://localhost:8000/admin/
 echo.
+echo   提示: 若不想弹出新窗口，请使用 start_quick.bat
 echo   按任意键停止所有服务...
 echo  ========================================
 echo.
 
 pause >nul
 
-:: ========== 清理 ==========
+::: ========== 清理 ==========
 echo.
 echo 正在停止所有服务...
 

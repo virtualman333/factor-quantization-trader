@@ -82,6 +82,7 @@ DATABASES = {
 }
 
 # Cache
+# NOTE: redis-py 已锁定 <5.0（兼容旧版 Redis 3.x，不发送 HELLO/RESP3 命令）
 CACHES = {
     'default': {
         'BACKEND': 'django.core.cache.backends.redis.RedisCache',

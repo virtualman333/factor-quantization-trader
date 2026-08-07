@@ -1,0 +1,7 @@
+﻿venv\Scripts\python.exe : Watching for file changes with StatReloader
+    + CategoryInfo          : NotSpecified: (Watching for fi...th StatReloader:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Performing system checks...
+
+System check identified no issues (0 silenced).
