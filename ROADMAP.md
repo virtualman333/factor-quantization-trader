@@ -60,12 +60,12 @@
   - [ ] Swagger UI（`/api/docs/`）+ ReDoc（`/api/redoc/`）
   - [ ] ViewSet 和 Serializer 添加文档注解
 
-- [ ] **性能监控**
-  - [ ] Django Debug Toolbar（开发环境）
-  - [ ] Silk 请求性能分析
-  - [ ] Celery 任务监控（Flower）
-  - [ ] 数据库慢查询日志
-  - [ ] Redis 内存使用监控
+- [x] **性能监控**
+  - [x] Django Debug Toolbar（开发环境）
+  - [x] Silk 请求性能分析
+  - [x] Celery 任务监控（Flower）
+  - [x] 数据库慢查询日志
+  - [x] Redis 内存使用监控
 
 ---
 
