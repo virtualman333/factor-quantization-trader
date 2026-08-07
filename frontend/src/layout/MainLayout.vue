@@ -134,6 +134,10 @@
                 <el-dropdown-item disabled>
                   <span class="user-name">{{ authStore.user?.username || '--' }}</span>
                 </el-dropdown-item>
+                <el-dropdown-item v-if="authStore.isAdmin" command="admin" divided>
+                  <el-icon><Setting /></el-icon>
+                  切换管理端
+                </el-dropdown-item>
                 <el-dropdown-item divided command="logout">退出登录</el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -173,7 +177,9 @@ async function refreshConnection() {
 }
 
 function handleUserCommand(command) {
-  if (command === 'logout') {
+  if (command === 'admin') {
+    router.push('/admin')
+  } else if (command === 'logout') {
     authStore.logout()
     ElMessage.success('已退出登录')
     router.push('/login')
