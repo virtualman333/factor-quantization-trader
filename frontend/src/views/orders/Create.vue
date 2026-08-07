@@ -6,7 +6,7 @@
     <el-card style="margin-top:16px;max-width:600px">
       <el-form :model="form" label-width="100px">
         <el-form-item label="交易品种">
-          <el-input v-model="form.inst_id" placeholder="BTC-USDT" />
+          <instrument-select v-model="form.inst_id" placeholder="搜索品种" width="100%" />
         </el-form-item>
         <el-form-item label="方向">
           <el-radio-group v-model="form.side">
@@ -51,6 +51,7 @@
 <script setup>
 import { ref, reactive } from 'vue'
 import { createOrder } from '@/api/orders'
+import InstrumentSelect from '@/components/InstrumentSelect.vue'
 import { ElMessage } from 'element-plus'
 
 const form = reactive({

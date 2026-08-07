@@ -3,7 +3,7 @@
     <div class="page-header">
       <h2>实时行情</h2>
       <div>
-        <el-input v-model="instId" placeholder="品种ID" style="width:200px" clearable />
+        <instrument-select v-model="instId" placeholder="搜索品种" width="200px" />
         <el-button type="primary" :icon="Refresh" :loading="loading" @click="refresh" style="margin-left:8px">刷新行情</el-button>
         <el-tag :type="realtimeStore.serverConnected ? 'success' : 'warning'" size="small" style="margin-left:8px">
           {{ realtimeStore.serverConnected ? '实时推送中' : '实时通道未连接' }}
@@ -35,6 +35,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { getTickers, refreshTicker } from '@/api/market'
+import InstrumentSelect from '@/components/InstrumentSelect.vue'
 import { useRealtimeStore } from '@/stores/realtime'
 import { ElMessage } from 'element-plus'
 

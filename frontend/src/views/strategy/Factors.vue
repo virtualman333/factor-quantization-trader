@@ -3,7 +3,7 @@
     <div class="page-header">
       <h2>因子定义</h2>
       <div>
-        <el-input v-model="instId" placeholder="品种ID" style="width:200px" clearable />
+        <instrument-select v-model="instId" placeholder="搜索品种" width="200px" />
         <el-select v-model="bar" style="width:100px;margin-left:8px">
           <el-option v-for="b in bars" :key="b" :label="b" :value="b" />
         </el-select>
@@ -49,6 +49,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { getFactors, calculateFactor } from '@/api/strategy'
+import InstrumentSelect from '@/components/InstrumentSelect.vue'
 import { ElMessage } from 'element-plus'
 
 const tableData = ref([])

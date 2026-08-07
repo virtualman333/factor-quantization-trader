@@ -9,7 +9,7 @@
         </el-tag>
       </h2>
       <div class="header-right">
-        <el-input v-model="instId" placeholder="品种 (BTC-USDT)" style="width:180px" clearable />
+        <instrument-select v-model="instId" placeholder="搜索品种" width="180px" />
         <el-select v-model="bar" style="width:90px;margin-left:8px">
           <el-option v-for="b in bars" :key="b" :label="b" :value="b" />
         </el-select>
@@ -79,6 +79,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { scrollKlines, fetchKlines as fetchApi } from '@/api/market'
+import InstrumentSelect from '@/components/InstrumentSelect.vue'
 import { useConnectionStore } from '@/stores/connection'
 import { useRealtimeStore } from '@/stores/realtime'
 import { ElMessage } from 'element-plus'

@@ -239,8 +239,8 @@ import {
   getStrategies, createStrategy, updateStrategy, deleteStrategy,
   activateStrategy, pauseStrategy, runSignals as runSignalsApi,
   executeSignals as execSignalsApi, runBacktest as runBacktestApi,
-  getInstruments,
 } from '@/api/strategy'
+import { getInstruments as getMarketInstruments } from '@/api/market'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, RefreshLeft } from '@element-plus/icons-vue'
 
@@ -302,13 +302,15 @@ const mergeVolumeParams = (raw) => ({ ...DEFAULT_VOLUME_PARAMS, ...(raw || {}) }
 const loadInstruments = async (instType, keyword = '') => {
   instrumentsLoading.value = true
   try {
-    const res = await getInstruments(instType)
-    let items = (res.instruments || []).filter(i => i.value)
-    if (keyword) {
-      const k = keyword.toUpperCase()
-      items = items.filter(i => i.label.toUpperCase().includes(k))
-    }
-    instrumentOptions.value = items
+    const params = {}
+    if (instType) params.inst_type = instType
+    if (keyword) params.keyword = keyword
+    params.page_size = 50
+    const res = await getMarketInstruments(params)
+    const rows = res.results || res || []
+    instrumentOptions.value = rows
+      .filter(i => i.inst_id)
+      .map(i => ({ label: i.inst_id, value: i.inst_id }))
   } catch (e) { ElMessage.error(e.message) }
   instrumentsLoading.value = false
 }

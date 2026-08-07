@@ -31,6 +31,17 @@ class InstrumentViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = InstrumentSerializer
     filterset_fields = ['inst_type', 'state']
 
+    def get_queryset(self):
+        """支持 keyword 模糊搜索品种ID（用于下拉选择组件）"""
+        qs = Instrument.objects.filter(is_active=True)
+        keyword = self.request.query_params.get('keyword', '').strip()
+        if keyword:
+            qs = qs.filter(inst_id__icontains=keyword.upper())
+        inst_type = self.request.query_params.get('inst_type', '').strip()
+        if inst_type:
+            qs = qs.filter(inst_type=inst_type)
+        return qs
+
     @action(detail=False, methods=['post'])
     def sync(self, request):
         """手动同步交易品种"""
