@@ -30,6 +30,13 @@ class OKXClient:
         if not all([self.api_key, self.api_secret, self.passphrase]):
             logger.warning('OKX API 凭证未完整配置，仅可使用公共接口')
 
+        # 懒加载模块占位（实际实例在 property 首次访问时创建）
+        self._account = None
+        self._trade = None
+        self._market = None
+        self._public = None
+        self._funding = None
+
     def has_credentials(self) -> bool:
         """判断是否已配置完整凭证（可发起交易请求）"""
         return bool(self.api_key and self.api_secret and self.passphrase)
@@ -41,12 +48,6 @@ class OKXClient:
                 f'未配置 OKX API 凭证，无法执行{action}。'
                 '请先在「系统设置-API凭证」中配置当前环境的 API Key/Secret/Passphrase。'
             )
-
-        self._account = None
-        self._trade = None
-        self._market = None
-        self._public = None
-        self._funding = None
 
     # -------- 懒加载模块 --------
     @property
