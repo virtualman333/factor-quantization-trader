@@ -114,7 +114,11 @@ const load = async () => {
 }
 
 const cancel = async (row) => {
-  const ok = await confirm.cancelOrder(row.inst_id)
+  const ok = await confirm(
+    `确认撤销订单 ${row.inst_id}（${row.side === 'buy' ? '买入' : '卖出'} ${row.sz}）？`,
+    '撤销确认',
+    { type: 'warning', confirmButtonText: '撤销' }
+  )
   if (!ok) return
   try {
     await orderStore.cancel(row.id)

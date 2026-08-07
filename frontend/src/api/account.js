@@ -10,6 +10,7 @@ export function getLivePositions(params) { return api.get('/account/positions/li
 
 export function getNetValues(params) { return api.get('/account/net-value/', { params }) }
 export function recordNetValue() { return api.post('/account/net-value/record/') }
+export function getNetValueChart(params) { return api.get('/account/net-value/chart/', { params }) }
 
 export function getPnlReport(params) { return api.get('/account/credentials/pnl_report/', { params }) }
 export function getFeeStatistics(params) { return api.get('/account/credentials/fee_statistics/', { params }) }

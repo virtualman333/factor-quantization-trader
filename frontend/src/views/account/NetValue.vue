@@ -22,7 +22,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { getNetValues, recordNetValue } from '@/api/account'
+import { getNetValues, recordNetValue, getNetValueChart } from '@/api/account'
 import { ElMessage } from 'element-plus'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
@@ -36,18 +36,23 @@ const loading = ref(false)
 const page = ref(1)
 const total = ref(0)
 
-const chartOption = computed(() => ({
-  title: { text: '净值走势', left: 'center' },
-  tooltip: { trigger: 'axis' },
-  grid: { left: 60, right: 20, bottom: 40 },
-  xAxis: { type: 'category', data: [...tableData.value].reverse().map(d => d.record_time?.slice(0, 10) || '') },
-  yAxis: { type: 'value', name: '权益(USD)' },
-  series: [{
-    data: [...tableData.value].reverse().map(d => parseFloat(d.total_eq) || 0),
-    type: 'line', smooth: true, areaStyle: { opacity: 0.1 },
-    itemStyle: { color: '#409eff' },
-  }],
-}))
+const chartData = ref([])
+
+const chartOption = computed(() => {
+  const data = chartData.value || []
+  return {
+    title: { text: '净值走势', left: 'center' },
+    tooltip: { trigger: 'axis' },
+    grid: { left: 60, right: 20, bottom: 40 },
+    xAxis: { type: 'category', data: data.map(d => d.time) },
+    yAxis: { type: 'value', name: '权益(USD)', scale: true },
+    series: [{
+      data: data.map(d => d.total_eq),
+      type: 'line', smooth: true, areaStyle: { opacity: 0.1 },
+      itemStyle: { color: '#409eff' },
+    }],
+  }
+})
 
 const load = async () => {
   loading.value = true
@@ -61,12 +66,19 @@ const load = async () => {
 
 const record = async () => {
   loading.value = true
-  try { await recordNetValue(); ElMessage.success('净值已记录'); await load() }
+  try { await recordNetValue(); ElMessage.success('净值已记录'); await load(); loadChart() }
   catch (e) { ElMessage.error(e.message) }
   loading.value = false
 }
 
-onMounted(load)
+const loadChart = async () => {
+  try {
+    const res = await getNetValueChart({ days: 90 })
+    chartData.value = res.results || []
+  } catch { /* 图表加载失败忽略 */ }
+}
+
+onMounted(() => { load(); loadChart() })
 </script>
 
 <style scoped>

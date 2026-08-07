@@ -210,7 +210,12 @@ class PositionSnapshotViewSet(viewsets.ReadOnlyModelViewSet):
     filterset_fields = ['inst_id', 'pos_side']
 
     def get_queryset(self):
-        return PositionSnapshot.objects.filter(user=self.request.user)
+        qs = PositionSnapshot.objects.filter(user=self.request.user)
+        # 支持 inst_type 过滤（SPOT/SWAP）
+        inst_type = self.request.query_params.get('inst_type', '').strip()
+        if inst_type:
+            qs = qs.filter(inst_id__endswith=f'-{inst_type}')
+        return qs
 
     @action(detail=False, methods=['post'])
     def snapshot(self, request):
@@ -251,3 +256,23 @@ class NetValueHistoryViewSet(viewsets.ReadOnlyModelViewSet):
         record = AccountService.record_net_value(user=request.user)
         serializer = NetValueHistorySerializer(record)
         return Response(serializer.data)
+
+    @action(detail=False, methods=['get'])
+    def chart(self, request):
+        """净值曲线数据（最近N天，按时间正序，供图表使用）"""
+        from datetime import timedelta
+        from django.utils import timezone
+
+        days = int(request.query_params.get('days', 90))
+        since = timezone.now() - timedelta(days=days)
+        rows = list(
+            NetValueHistory.objects.filter(
+                user=request.user, record_time__gte=since
+            ).order_by('record_time')
+        )
+        data = [{
+            'time': r.record_time.strftime('%Y-%m-%d %H:%M'),
+            'total_eq': float(r.total_eq),
+            'pnl_ratio': float(r.pnl_ratio) if r.pnl_ratio else None,
+        } for r in rows]
+        return Response({'results': data})

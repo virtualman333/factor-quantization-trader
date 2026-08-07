@@ -47,10 +47,20 @@ class InstrumentViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['post'])
     def sync(self, request):
-        """手动同步交易品种"""
+        """手动同步交易品种（异步任务执行，拉取全量可能耗时较长）"""
         inst_type = request.data.get('inst_type', 'SPOT')
-        count = MarketDataService.sync_instruments(inst_type)
-        return Response({'count': count, 'inst_type': inst_type})
+        try:
+            from apps.market.tasks import sync_instruments_task
+            task = sync_instruments_task.delay(inst_type=inst_type)
+            return Response({
+                'task_id': str(task.id),
+                'submitted': True,
+                'inst_type': inst_type,
+            }, status=202)
+        except Exception as e:
+            logger.warning(f'异步同步品种失败，回退同步执行: {e}')
+            count = MarketDataService.sync_instruments(inst_type)
+            return Response({'count': count, 'inst_type': inst_type})
 
 
 class KLineViewSet(viewsets.ReadOnlyModelViewSet):

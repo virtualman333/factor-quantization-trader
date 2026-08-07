@@ -53,6 +53,7 @@ const load = async () => {
   loading.value = true
   try {
     const params = { page: page.value }
+    if (instType.value) params.inst_type = instType.value
     const res = await getPositions(params)
     tableData.value = res.results || res
     total.value = res.count || 0

@@ -56,9 +56,14 @@ const fetch = async () => {
 const syncInstruments = async (instType) => {
   loading.value = true
   try {
-    await syncApi({ inst_type: instType })
-    ElMessage.success('同步成功')
-    await fetch()
+    const res = await syncApi({ inst_type: instType })
+    if (res.submitted) {
+      ElMessage.success('品种同步任务已提交，正在后台拉取，完成后刷新列表')
+      setTimeout(fetch, 3000)
+    } else {
+      ElMessage.success('同步成功')
+      await fetch()
+    }
   } catch (e) { ElMessage.error(e.message) }
   loading.value = false
 }

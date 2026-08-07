@@ -15,6 +15,20 @@ def sync_instruments_task():
 
 
 @shared_task
+def sync_instruments_task(inst_type: str = 'SPOT'):
+    """异步同步交易品种（拉取 OKX 全量品种可能耗时较长）"""
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        count = MarketDataService.sync_instruments(inst_type)
+        logger.info(f'[sync_instruments] {inst_type} 同步完成，共 {count} 个品种')
+        return {'inst_type': inst_type, 'count': count}
+    except Exception as e:
+        logger.error(f'[sync_instruments] {inst_type} 同步失败: {e}')
+        return {'inst_type': inst_type, 'count': 0, 'error': str(e)}
+
+
+@shared_task
 def sync_tickers_task(inst_ids: list = None):
     """同步行情快照（支持指定品种，缺省同步前50个活跃品种）"""
     from apps.market.models import Instrument
