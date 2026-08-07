@@ -188,6 +188,31 @@ const toChartData = (items) => {
     }))
 }
 
+// ---------- 主动加载初始数据（klinecharts v9 的 setLoadDataCallback 不会自动触发初次加载） ----------
+const initialLoad = async () => {
+  try {
+    loading.value = true
+    const res = await scrollKlines({
+      inst_id: instId.value,
+      bar: bar.value,
+      limit: preloadSize.value,
+      auto_fetch: 'true',
+    })
+    const items = res?.results || []
+    if (items.length > 0 && chart) {
+      chart.applyNewData(toChartData(items), res?.has_more ?? false)
+      await nextTick()
+      updateSummary()
+    } else if (res?.fetching) {
+      ElMessage.info('正在从交易所拉取数据，请稍后再滑动加载')
+    }
+  } catch (e) {
+    ElMessage.error(`加载失败: ${e.message}`)
+  } finally {
+    loading.value = false
+  }
+}
+
 // ---------- 初始化图表 ----------
 const initChart = () => {
   if (!chartRef.value) return
@@ -301,30 +326,37 @@ const initChart = () => {
     // RSI 副图
     chart.createIndicator('RSI', false, { height: 160, minHeight: 50 })
 
-    // 设置滑动加载回调
+    // 设置滑动加载回调（仅处理左右滚动的 forward/backward）
     chart.setLoadDataCallback(loadDataCallback)
   }
 }
 
 // ---------- 滑动加载回调：核心逻辑 ----------
+// klinecharts v9 触发规则：
+//   - 首次加载会触发 type='forward'，但 data=null（因为 dataList[0] 不存在）
+//   - 向左滚动到边缘触发 type='forward'，data 有 timestamp
+//   - 向右滚动到边缘触发 type='backward'，data 有 timestamp
 const loadDataCallback = async (params) => {
   const { type, data, callback } = params
   const scrollParams = {
     inst_id: instId.value,
     bar: bar.value,
-    limit: 500,
     auto_fetch: 'true',
   }
 
   try {
     let res
-    if (type === 'forward') {
-      scrollParams.before = String(data.timestamp)
-      res = await scrollKlines(scrollParams)
-    } else if (type === 'backward') {
-      scrollParams.after = String(data.timestamp)
+    if ((type === 'forward' || type === 'backward') && data?.timestamp) {
+      // 滚动加载（带游标）
+      if (type === 'forward') {
+        scrollParams.before = String(data.timestamp)
+      } else {
+        scrollParams.after = String(data.timestamp)
+      }
+      scrollParams.limit = 500
       res = await scrollKlines(scrollParams)
     } else {
+      // 初始加载 (data 为 null，走默认 limit)
       scrollParams.limit = preloadSize.value
       res = await scrollKlines(scrollParams)
     }
@@ -360,6 +392,7 @@ const recreateChart = () => {
   dataSummary.value = null
   initChart()
   setupRealtime()
+  initialLoad()
 }
 
 // ---------- 切换预加载数量 ----------
@@ -414,6 +447,8 @@ onMounted(async () => {
   initChart()
   setupResizeObserver()
   setupRealtime()
+  // klinecharts v9 不会自动触发 loadDataCallback 初始加载，需主动调用
+  initialLoad()
 })
 
 onBeforeUnmount(() => {
