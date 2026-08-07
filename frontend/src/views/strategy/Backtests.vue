@@ -230,6 +230,7 @@ import { use } from 'echarts/core'
 import { LineChart, BarChart } from 'echarts/charts'
 import { TitleComponent, TooltipComponent, GridComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
+import { formatDate, formatDateTime } from '@/utils/time'
 use([LineChart, BarChart, TitleComponent, TooltipComponent, GridComponent, CanvasRenderer])
 
 // ========== 状态 ==========
@@ -263,25 +264,12 @@ function fmtNum(v, digits = 2) {
   return n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })
 }
 function fmtDate(v) {
-  if (!v) return '--'
-  const d = new Date(v)
-  if (isNaN(d.getTime())) return String(v).slice(0, 10)
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
+  // 统一按北京时间显示
+  return formatDate(v)
 }
 function fmtDateTime(v) {
-  if (!v) return '--'
-  const d = new Date(v)
-  if (isNaN(d.getTime())) return String(v).slice(0, 19).replace('T', ' ')
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  const hh = String(d.getHours()).padStart(2, '0')
-  const mm = String(d.getMinutes()).padStart(2, '0')
-  const ss = String(d.getSeconds()).padStart(2, '0')
-  return `${y}-${m}-${day} ${hh}:${mm}:${ss}`
+  // 统一按北京时间显示
+  return formatDateTime(v)
 }
 
 // ========== 派生数据 ==========

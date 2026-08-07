@@ -266,6 +266,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { getSignals, executeSignal } from '@/api/strategy'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, View, QuestionFilled, VideoPlay } from '@element-plus/icons-vue'
+import { formatDateTime } from '@/utils/time'
 
 const tableData = ref([])
 const loading = ref(false)
@@ -288,16 +289,8 @@ function fmtPrice(v) {
   return n.toLocaleString('en-US', { maximumFractionDigits: 6 })
 }
 function fmtDateTime(v) {
-  if (!v) return '--'
-  const d = new Date(v)
-  if (isNaN(d.getTime())) return String(v).slice(0, 19).replace('T', ' ')
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  const hh = String(d.getHours()).padStart(2, '0')
-  const mm = String(d.getMinutes()).padStart(2, '0')
-  const ss = String(d.getSeconds()).padStart(2, '0')
-  return `${y}-${m}-${day} ${hh}:${mm}:${ss}`
+  // 统一按北京时间显示，避免浏览器时区差异
+  return formatDateTime(v)
 }
 function scorePct(v) {
   // score 是 0~1 的小数 (Decimal)，转为 0~100 的百分比给 el-progress

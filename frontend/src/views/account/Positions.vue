@@ -42,6 +42,7 @@
 import { ref, onMounted } from 'vue'
 import { getPositions, savePositionSnapshot, getLivePositions } from '@/api/account'
 import { ElMessage } from 'element-plus'
+import { nowBeijing } from '@/utils/time'
 
 const tableData = ref([])
 const loading = ref(false)
@@ -81,7 +82,7 @@ const loadLive = async () => {
       inst_id: p.instId, pos_side: p.posSide, pos: p.pos,
       avg_px: p.avgPx, mark_px: p.markPx, upl: p.upl,
       margin: p.margin, leverage: p.lever, liq_px: p.liqPx,
-      snapshot_time: new Date().toLocaleString(),
+      snapshot_time: nowBeijing(),
     }))
     total.value = tableData.value.length
     ElMessage.success('获取成功')

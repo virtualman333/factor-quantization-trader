@@ -26,6 +26,7 @@
 import { ref, onMounted } from 'vue'
 import { getBalances, saveBalanceSnapshot, getLiveBalance } from '@/api/account'
 import { ElMessage } from 'element-plus'
+import { nowBeijing } from '@/utils/time'
 
 const tableData = ref([])
 const loading = ref(false)
@@ -61,7 +62,7 @@ const loadLive = async () => {
       frozen_bal: d.frozenBal,
       usd_value: d.usdValue,
       discount: d.discount || '1',
-      snapshot_time: new Date().toLocaleString(),
+      snapshot_time: nowBeijing(),
     }))
     total.value = tableData.value.length
     ElMessage.success('获取成功')

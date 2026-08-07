@@ -109,7 +109,7 @@
           </template>
         </el-table-column>
         <el-table-column label="创建时间" width="160">
-          <template #default="{ row }">{{ row.created_at?.slice(0, 19).replace('T', ' ') }}</template>
+          <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
       </el-table>
     </el-card>
@@ -411,6 +411,7 @@ import { useConfirm } from '@/composables/useConfirm'
 import { useFormDraft } from '@/composables/useFormDraft'
 import { ElMessage } from 'element-plus'
 import { Plus, Search, RefreshLeft, Delete, Loading, ArrowDown } from '@element-plus/icons-vue'
+import { formatDateTime } from '@/utils/time'
 
 const strategyStore = useStrategyStore()
 const { confirm } = useConfirm()

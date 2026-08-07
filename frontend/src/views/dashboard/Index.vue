@@ -148,6 +148,7 @@ import { getLiveBalance, getLivePositions } from '@/api/account'
 import { getTickers } from '@/api/market'
 import { getStrategyRanking, getFactorHeatmap, getMarketOverview, getNetValueCurve } from '@/api/dashboard'
 import { useRealtimeStore } from '@/stores/realtime'
+import { formatShort } from '@/utils/time'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { LineChart, BarChart, HeatmapChart } from 'echarts/charts'
@@ -212,7 +213,7 @@ const netChartOption = computed(() => {
   return {
     tooltip: { trigger: 'axis' },
     grid: { left: 70, right: 20, top: 20, bottom: 40 },
-    xAxis: { type: 'category', data: data.map(d => d.time?.slice(0, 16).replace('T', ' ')) },
+    xAxis: { type: 'category', data: data.map(d => formatShort(d.time)) },
     yAxis: { type: 'value', scale: true },
     series: [{
       name: '净值', type: 'line', data: data.map(d => d.net_value),
