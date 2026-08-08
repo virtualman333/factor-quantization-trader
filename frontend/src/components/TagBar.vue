@@ -252,21 +252,12 @@ const onCommand = (cmd) => {
   nextTick(updateScrollButtons)
 }
 
-// 路由变化：更新滚动按钮、自动滚动激活标签
-let unwatchRoute = null
 onMounted(() => {
-  unwatchRoute = route
-  // 监听路由变化
-  watchRoute()
   tabsStore.addTab(route)
   nextTick(() => {
     updateScrollButtons()
     scrollToActive()
   })
-})
-
-onBeforeUnmount(() => {
-  unwatchRoute = null
 })
 
 // 监听路由变化：更新滚动按钮、自动滚动激活标签
