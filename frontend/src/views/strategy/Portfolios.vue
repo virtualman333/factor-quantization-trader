@@ -98,6 +98,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'Portfolios' })
 import { ref, computed, onMounted } from 'vue'
 import { Plus } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'

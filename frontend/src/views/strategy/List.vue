@@ -1,9 +1,52 @@
 <template>
   <div>
     <div class="page-header">
-      <h2>策略管理</h2>
+      <div class="header-left">
+        <h2>策略管理</h2>
+        <span class="subtitle">创建、配置、回测你的量化策略</span>
+      </div>
       <el-button type="primary" :icon="Plus" @click="openDialog(null)">新建策略</el-button>
     </div>
+
+    <!-- 统计概览 -->
+    <el-row :gutter="16" class="stats-row">
+      <el-col :span="6">
+        <div class="stat-card total">
+          <div class="stat-icon"><el-icon><Files /></el-icon></div>
+          <div class="stat-body">
+            <div class="stat-value">{{ total }}</div>
+            <div class="stat-label">策略总数</div>
+          </div>
+        </div>
+      </el-col>
+      <el-col :span="6">
+        <div class="stat-card running">
+          <div class="stat-icon"><el-icon><VideoPlay /></el-icon></div>
+          <div class="stat-body">
+            <div class="stat-value">{{ runningCount }}</div>
+            <div class="stat-label">运行中</div>
+          </div>
+        </div>
+      </el-col>
+      <el-col :span="6">
+        <div class="stat-card paused">
+          <div class="stat-icon"><el-icon><VideoPause /></el-icon></div>
+          <div class="stat-body">
+            <div class="stat-value">{{ pausedCount }}</div>
+            <div class="stat-label">已暂停</div>
+          </div>
+        </div>
+      </el-col>
+      <el-col :span="6">
+        <div class="stat-card draft">
+          <div class="stat-icon"><el-icon><EditPen /></el-icon></div>
+          <div class="stat-body">
+            <div class="stat-value">{{ draftCount }}</div>
+            <div class="stat-label">草稿</div>
+          </div>
+        </div>
+      </el-col>
+    </el-row>
 
     <!-- 新手提示 -->
     <el-alert
@@ -16,8 +59,8 @@
     >
       <template #title>初次使用？先了解策略机制</template>
       <div class="guide-text">
-        策略会按 K 线周期自动运行并生成买卖信号。建议先在<term-tip term-key="backtest" />中验证历史表现，
-        重点关注<term-tip term-key="max_drawdown" />和<term-tip term-key="sharpe" />，满意后再激活。
+        策略会按 K 线周期自动运行并生成买卖信号。建议先回测验证历史表现，
+        重点关注最大回撤和夏普比率，满意后再激活。
         <el-link type="primary" :underline="false" @click="openHelp" style="margin-left:8px">查看新手引导 →</el-link>
       </div>
     </el-alert>
@@ -29,14 +72,8 @@
           <el-input v-model="filters.keyword" placeholder="策略名称模糊搜索" clearable @keyup.enter="onSearch" @clear="onSearch" style="width:180px" />
         </el-form-item>
         <el-form-item label="策略类型">
-          <el-select v-model="filters.strategy_type" placeholder="全部" clearable @change="onSearch" style="width:140px">
+          <el-select v-model="filters.strategy_type" placeholder="全部" clearable @change="onSearch" style="width:150px">
             <el-option v-for="o in STRATEGY_TYPE_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="品种类型">
-          <el-select v-model="filters.inst_type" placeholder="全部" clearable @change="onSearch" style="width:120px">
-            <el-option label="现货" value="SPOT" />
-            <el-option label="永续合约" value="SWAP" />
           </el-select>
         </el-form-item>
         <el-form-item label="状态">
@@ -56,11 +93,11 @@
       </el-form>
     </el-card>
 
-    <!-- 进行中的回测任务 -->
+    <!-- 进行中的任务 -->
     <el-card v-if="activeTasks.length" shadow="never" style="margin-top:16px">
       <template #header>
         <div class="tasks-header">
-          <span><el-icon style="margin-right:6px"><Loading /></el-icon>回测任务</span>
+          <span><el-icon style="margin-right:6px"><Loading /></el-icon>后台任务</span>
           <el-tag size="small" type="warning">{{ activeTasks.length }} 个进行中</el-tag>
         </div>
       </template>
@@ -82,30 +119,20 @@
         </el-table-column>
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
-            <el-tag size="small" :type="taskStateType(row.state)">
-              {{ taskStateLabel(row.state) }}
-            </el-tag>
+            <el-tag size="small" :type="taskStateType(row.state)">{{ taskStateLabel(row.state) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="进度" min-width="140">
-          <template #default="{ row }">
-            <el-progress
-              v-if="row.state === 'SUCCESS' || row.state === 'FAILURE'"
-              :percentage="100"
-              :status="row.state === 'SUCCESS' ? 'success' : 'exception'"
-            />
-            <el-progress v-else :percentage="loadingProgress" :indeterminate="true" :duration="1" :show-text="false" />
-          </template>
-        </el-table-column>
-        <el-table-column label="结果" min-width="180">
+        <el-table-column label="结果" min-width="200">
           <template #default="{ row }">
             <span v-if="row.state === 'SUCCESS'" style="color:#67c23a">
               收益 {{ (row.result.total_return * 100).toFixed(2) }}% · 夏普 {{ row.result.sharpe_ratio?.toFixed(2) }} · {{ row.result.total_trades }}笔
             </span>
             <span v-else-if="row.state === 'FAILURE'" style="color:#f56c6c">
-              {{ row.result.error || '回测失败' }}
+              {{ row.result.error || '任务失败' }}
             </span>
-            <span v-else style="color:#909399">执行中…</span>
+            <span v-else style="color:#909399">
+              <el-progress :percentage="80" :indeterminate="true" :duration="1" :show-text="false" style="width:120px" />执行中…
+            </span>
           </template>
         </el-table-column>
         <el-table-column label="创建时间" width="160">
@@ -114,25 +141,59 @@
       </el-table>
     </el-card>
 
+    <!-- 策略表格 -->
     <el-table :data="tableData" v-loading="loading" border stripe style="margin-top:16px">
-      <el-table-column prop="name" label="名称" width="150" />
-      <el-table-column prop="strategy_type_display" label="策略类型" width="120" />
-      <el-table-column prop="inst_type" label="品种类型" width="100" />
-      <el-table-column prop="bar" label="K线周期" width="80" />
-      <el-table-column prop="direction_display" label="方向" width="80" />
-      <el-table-column prop="td_mode_display" label="保证金模式" width="110" />
-      <el-table-column prop="leverage" label="杠杆" width="80" />
-      <el-table-column prop="status_display" label="状态" width="90">
+      <el-table-column label="策略" min-width="180">
+        <template #default="{ row }">
+          <div class="strategy-cell">
+            <div class="s-name">{{ row.name }}</div>
+            <div class="s-tags">
+              <el-tag size="small" type="primary" effect="plain">{{ row.strategy_type_display }}</el-tag>
+              <el-tag size="small" effect="plain">{{ row.bar }}</el-tag>
+              <el-tag size="small" :type="row.direction === 'long' ? 'success' : row.direction === 'short' ? 'danger' : 'info'" effect="plain">
+                {{ row.direction_display }}
+              </el-tag>
+            </div>
+          </div>
+        </template>
+      </el-table-column>
+      <el-table-column label="交易对" min-width="160">
+        <template #default="{ row }">
+          <div class="symbol-tags">
+            <el-tag v-for="s in (row.symbols || []).slice(0, 3)" :key="s" size="small" effect="plain" style="margin:2px 4px 2px 0">
+              {{ s }}
+            </el-tag>
+            <el-tag v-if="(row.symbols || []).length > 3" size="small" type="info">+{{ row.symbols.length - 3 }}</el-tag>
+          </div>
+        </template>
+      </el-table-column>
+      <el-table-column label="状态" width="90">
         <template #default="{ row }">
           <el-tag :type="row.status === 'active' ? 'success' : row.status === 'paused' ? 'warning' : 'info'" size="small">
             {{ row.status_display }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="initial_capital" label="初始资金" width="120" />
-      <el-table-column prop="order_size_pct" label="仓位比例" width="100" />
-      <el-table-column prop="max_positions" label="最大持仓" width="100" />
-      <el-table-column label="操作" width="200" fixed="right">
+      <el-table-column label="最新回测" min-width="170">
+        <template #default="{ row }">
+          <template v-if="row.latest_backtest">
+            <div class="bt-cell">
+              <span :style="{ color: Number(row.latest_backtest.total_return) >= 0 ? '#67c23a' : '#f56c6c', fontWeight: 600 }">
+                {{ (Number(row.latest_backtest.total_return) * 100).toFixed(2) }}%
+              </span>
+              <span class="bt-sub">夏普 {{ Number(row.latest_backtest.sharpe_ratio || 0).toFixed(2) }} · {{ row.latest_backtest.total_trades }}笔</span>
+            </div>
+          </template>
+          <span v-else class="bt-empty">尚未回测</span>
+        </template>
+      </el-table-column>
+      <el-table-column prop="initial_capital" label="初始资金" width="110" align="right">
+        <template #default="{ row }">{{ Number(row.initial_capital).toLocaleString() }}</template>
+      </el-table-column>
+      <el-table-column prop="order_size_pct" label="仓位" width="80">
+        <template #default="{ row }">{{ (Number(row.order_size_pct) * 100).toFixed(0) }}%</template>
+      </el-table-column>
+      <el-table-column label="操作" width="250" fixed="right">
         <template #default="{ row }">
           <el-button size="small" type="primary" @click="openDialog(row)">编辑</el-button>
           <el-button
@@ -144,10 +205,10 @@
             <el-button size="small">更多<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="signals">生成信号</el-dropdown-item>
-                <el-dropdown-item command="execute">执行信号</el-dropdown-item>
-                <el-dropdown-item command="backtest" divided>回测</el-dropdown-item>
+                <el-dropdown-item command="backtest">运行回测</el-dropdown-item>
                 <el-dropdown-item command="optimize">参数优化</el-dropdown-item>
+                <el-dropdown-item command="signals" divided>生成信号</el-dropdown-item>
+                <el-dropdown-item command="execute">执行信号</el-dropdown-item>
                 <el-dropdown-item command="delete" divided><span style="color:#f56c6c">删除</span></el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -169,28 +230,27 @@
     />
 
     <!-- 编辑/新建弹窗 -->
-    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑策略' : '新建策略'" width="600px">
-      <el-form :model="form" label-width="110px">
-        <el-form-item label="名称">
-          <el-input v-model="form.name" />
+    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑策略' : '新建策略'" width="640px" top="6vh">
+      <el-form :model="form" label-width="110px" @submit.prevent>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="名称" required>
+              <el-input v-model="form.name" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item>
+              <template #label>策略类型 <term-tip term-key="strategy" /></template>
+              <el-select v-model="form.strategy_type" style="width:100%">
+                <el-option v-for="o in STRATEGY_TYPE_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item v-if="currentMeta" label="说明">
+          <span class="strategy-desc">{{ currentMeta.description }}</span>
         </el-form-item>
-        <el-form-item label="描述">
-          <el-input v-model="form.description" type="textarea" />
-        </el-form-item>
-        <el-form-item>
-          <template #label>策略类型 <term-tip term-key="strategy" /></template>
-          <el-select v-model="form.strategy_type" style="width:100%">
-            <el-option v-for="o in STRATEGY_TYPE_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
-          </el-select>
-          <div v-if="currentMeta" class="strategy-desc">{{ currentMeta.description }}</div>
-        </el-form-item>
-        <el-form-item label="品种类型">
-          <el-select v-model="form.inst_type">
-            <el-option label="现货" value="SPOT" />
-            <el-option label="永续合约" value="SWAP" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="交易对">
+        <el-form-item label="交易对" required>
           <instrument-select
             v-model="form.symbols"
             multiple
@@ -201,77 +261,111 @@
             width="100%"
           />
         </el-form-item>
-        <el-form-item label="K线周期">
-          <el-select v-model="form.bar">
-            <el-option v-for="b in ['1m','5m','15m','30m','1H','4H','1D','1W']" :key="b" :label="b" :value="b" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="方向">
-          <el-select v-model="form.direction">
-            <el-option label="做多" value="long" />
-            <el-option label="做空" value="short" />
-            <el-option label="双向" value="both" />
-          </el-select>
-        </el-form-item>
-        <el-form-item>
-          <template #label>保证金模式 <term-tip term-key="td_mode" /></template>
-          <el-select v-model="form.td_mode">
-            <el-option label="现金/现货" value="cash" />
-            <el-option label="全仓合约" value="cross" />
-            <el-option label="逐仓合约" value="isolated" />
-          </el-select>
-        </el-form-item>
-        <el-form-item>
-          <template #label>杠杆倍数 <term-tip term-key="leverage" /></template>
-          <el-input-number v-model="form.leverage" :min="1" :max="100" :step="1" />
-        </el-form-item>
-        <el-form-item label="初始资金">
-          <el-input-number v-model="form.initial_capital" :min="0" :step="1000" />
-        </el-form-item>
-        <el-form-item label="仓位比例">
-          <el-input-number v-model="form.order_size_pct" :min="0.01" :max="1" :step="0.05" />
-        </el-form-item>
-        <el-form-item label="最大持仓">
-          <el-input-number v-model="form.max_positions" :min="1" :max="20" />
-        </el-form-item>
-        <el-form-item>
-          <template #label>止损比例 <term-tip term-key="stop_loss" /></template>
-          <el-input-number v-model="form.stop_loss_pct" :min="0.01" :max="0.5" :step="0.01" />
-        </el-form-item>
-        <el-form-item>
-          <template #label>止盈比例 <term-tip term-key="take_profit" /></template>
-          <el-input-number v-model="form.take_profit_pct" :min="0.01" :max="1" :step="0.01" />
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="品种类型">
+              <el-select v-model="form.inst_type" style="width:100%">
+                <el-option label="现货" value="SPOT" />
+                <el-option label="永续合约" value="SWAP" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="K线周期">
+              <el-select v-model="form.bar" style="width:100%">
+                <el-option v-for="b in ['1m','5m','15m','30m','1H','4H','1D','1W']" :key="b" :label="b" :value="b" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="方向">
+              <el-select v-model="form.direction" style="width:100%">
+                <el-option label="做多" value="long" />
+                <el-option label="做空" value="short" />
+                <el-option label="双向" value="both" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item>
+              <template #label>保证金模式 <term-tip term-key="td_mode" /></template>
+              <el-select v-model="form.td_mode" style="width:100%">
+                <el-option label="现金/现货" value="cash" />
+                <el-option label="全仓合约" value="cross" />
+                <el-option label="逐仓合约" value="isolated" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item>
+              <template #label>杠杆 <term-tip term-key="leverage" /></template>
+              <el-input-number v-model="form.leverage" :min="1" :max="100" :step="1" style="width:100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="初始资金">
+              <el-input-number v-model="form.initial_capital" :min="0" :step="1000" style="width:100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="仓位比例">
+              <el-input-number v-model="form.order_size_pct" :min="0.01" :max="1" :step="0.05" style="width:100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="最大持仓">
+              <el-input-number v-model="form.max_positions" :min="1" :max="20" style="width:100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item>
+              <template #label>止损 <term-tip term-key="stop_loss" /></template>
+              <el-input-number v-model="form.stop_loss_pct" :min="0.01" :max="0.5" :step="0.01" style="width:100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item>
+              <template #label>止盈 <term-tip term-key="take_profit" /></template>
+              <el-input-number v-model="form.take_profit_pct" :min="0.01" :max="1" :step="0.01" style="width:100%" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="描述">
+          <el-input v-model="form.description" type="textarea" :rows="2" />
         </el-form-item>
         <el-form-item v-if="form.strategy_type === 'factor_composite'">
           <template #label>因子列表 <term-tip term-key="factor" /></template>
           <el-input v-model="factorsStr" placeholder="逗号分隔因子名 (momentum,rsi,macd)" />
         </el-form-item>
 
-        <!-- 策略专属参数：根据后端 meta schema 动态渲染 -->
+        <!-- 策略专属参数 -->
         <template v-if="currentMeta && currentMeta.params.length">
           <el-divider content-position="left">策略参数</el-divider>
-          <el-form-item v-for="p in currentMeta.params" :key="p.key" :label="p.label">
-            <template v-if="p.type === 'bool'">
-              <el-switch v-model="form.params[p.key]" />
-              <span class="hint">{{ p.help }}</span>
-            </template>
-            <template v-else-if="p.type === 'choice'">
-              <el-select v-model="form.params[p.key]" style="width:200px">
-                <el-option v-for="o in p.options" :key="o.value" :label="o.label" :value="o.value" />
-              </el-select>
-              <span class="hint">{{ p.help }}</span>
-            </template>
-            <template v-else>
-              <el-input-number
-                v-model="form.params[p.key]"
-                :min="p.min"
-                :max="p.max"
-                :step="p.step"
-                :precision="p.type === 'int' ? 0 : undefined"
-              />
-              <span class="hint">{{ p.help }}</span>
-            </template>
-          </el-form-item>
+          <el-row :gutter="16">
+            <el-col :span="12" v-for="p in currentMeta.params" :key="p.key">
+              <el-form-item :label="p.label" style="margin-bottom:14px">
+                <template v-if="p.type === 'bool'">
+                  <el-switch v-model="form.params[p.key]" />
+                  <span class="hint">{{ p.help }}</span>
+                </template>
+                <template v-else-if="p.type === 'choice'">
+                  <el-select v-model="form.params[p.key]" style="width:100%">
+                    <el-option v-for="o in p.options" :key="o.value" :label="o.label" :value="o.value" />
+                  </el-select>
+                </template>
+                <template v-else>
+                  <el-input-number
+                    v-model="form.params[p.key]"
+                    :min="p.min"
+                    :max="p.max"
+                    :step="p.step"
+                    :precision="p.type === 'int' ? 0 : undefined"
+                    style="width:100%"
+                  />
+                </template>
+              </el-form-item>
+            </el-col>
+          </el-row>
         </template>
       </el-form>
 
@@ -282,120 +376,54 @@
     </el-dialog>
 
     <!-- 回测弹窗 -->
-    <el-dialog v-model="backtestVisible" title="运行回测" width="500px">
-      <el-form label-width="100px">
-        <el-form-item label="开始日期">
-          <el-date-picker v-model="btStart" type="date" value-format="YYYY-MM-DD" />
-        </el-form-item>
-        <el-form-item label="结束日期">
-          <el-date-picker v-model="btEnd" type="date" value-format="YYYY-MM-DD" />
-        </el-form-item>
-        <el-form-item label="手续费率">
-          <el-input-number v-model="btFeeRate" :min="0" :max="0.01" :step="0.0005" :precision="4" />
-          <span class="hint">单边比例，默认 0.1%</span>
-        </el-form-item>
-        <el-form-item label="滑点">
-          <el-input-number v-model="btSlippage" :min="0" :max="0.01" :step="0.0005" :precision="4" />
-          <span class="hint">成交价偏移，默认 0.1%</span>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="backtestVisible = false">取消</el-button>
-        <el-button type="primary" @click="runBacktest" :loading="btLoading">运行</el-button>
-      </template>
-    </el-dialog>
+    <StrategyBacktestDialog
+      v-model="backtestVisible"
+      :strategy-id="btStrategyId"
+      :strategy-name="btStrategyName"
+      @submit="submitBacktest"
+    />
 
     <!-- 优化弹窗 -->
-    <el-dialog v-model="optVisible" title="策略优化" width="620px">
-      <el-tabs v-model="optTab">
-        <el-tab-pane label="参数优化（网格搜索）" name="params">
-          <el-form label-width="110px">
-            <el-form-item label="参数网格">
-              <div v-for="(g, idx) in gridRows" :key="idx" class="grid-row">
-                <el-input v-model="g.key" placeholder="参数名，如 vol_ratio" style="width:180px" />
-                <el-input v-model="g.values" placeholder="取值，逗号分隔，如 1.5,1.8,2.0" style="flex:1" />
-                <el-button type="danger" text @click="gridRows.splice(idx, 1)">移除</el-button>
-              </div>
-              <el-button size="small" type="primary" text @click="addGridRow">+ 添加参数</el-button>
-            </el-form-item>
-            <el-form-item label="开始日期">
-              <el-date-picker v-model="optStart" type="date" value-format="YYYY-MM-DD" />
-            </el-form-item>
-            <el-form-item label="结束日期">
-              <el-date-picker v-model="optEnd" type="date" value-format="YYYY-MM-DD" />
-            </el-form-item>
-          </el-form>
-          <el-button type="primary" :loading="optLoading" @click="runParamOptimize">开始网格搜索</el-button>
-          <el-table v-if="optResults.length" :data="optResults" border stripe size="small" style="margin-top:12px" max-height="260">
-            <el-table-column label="参数" min-width="160">
-              <template #default="{ row }">
-                <el-tag v-for="(v, k) in row.params" :key="k" size="small" style="margin-right:4px">{{ k }}={{ v }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="收益" width="90">
-              <template #default="{ row }">{{ (row.total_return * 100).toFixed(2) }}%</template>
-            </el-table-column>
-            <el-table-column label="夏普" width="80">
-              <template #default="{ row }">{{ row.sharpe_ratio.toFixed(2) }}</template>
-            </el-table-column>
-            <el-table-column label="胜率" width="80">
-              <template #default="{ row }">{{ (row.win_rate * 100).toFixed(1) }}%</template>
-            </el-table-column>
-            <el-table-column label="交易数" width="80">
-              <template #default="{ row }">{{ row.total_trades }}</template>
-            </el-table-column>
-          </el-table>
-        </el-tab-pane>
-        <el-tab-pane label="因子权重优化" name="weights">
-          <el-form label-width="110px">
-            <el-form-item label="开始日期">
-              <el-date-picker v-model="wtStart" type="date" value-format="YYYY-MM-DD" />
-            </el-form-item>
-            <el-form-item label="结束日期">
-              <el-date-picker v-model="wtEnd" type="date" value-format="YYYY-MM-DD" />
-            </el-form-item>
-            <el-form-item label="迭代次数">
-              <el-input-number v-model="wtIterations" :min="5" :max="50" />
-            </el-form-item>
-          </el-form>
-          <el-button type="primary" :loading="wtLoading" @click="runWeightOptimize">开始权重优化</el-button>
-          <div v-if="wtResult" class="wt-result">
-            <el-tag v-for="(v, k) in wtResult.weights" :key="k" size="small" style="margin:4px">
-              {{ k }}: {{ v }}
-            </el-tag>
-          </div>
-        </el-tab-pane>
-      </el-tabs>
-    </el-dialog>
+    <StrategyOptimizeDialog
+      v-model="optVisible"
+      :strategy-id="optStrategyId"
+      @submit-params="submitParamOptimize"
+      @submit-weights="submitWeightOptimize"
+    />
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, watch, inject } from 'vue'
+defineOptions({ name: 'StrategyList' })
+import { ref, computed, onMounted, onBeforeUnmount, onActivated, watch, inject } from 'vue'
 import {
   runSignals as runSignalsApi,
-  executeSignals as execSignalsApi, runBacktest as runBacktestApi,
-  optimizeParams as optimizeParamsApi, optimizeWeights as optimizeWeightsApi,
+  executeSignals as execSignalsApi,
+  runBacktest as runBacktestApi,
+  optimizeParams as optimizeParamsApi,
+  optimizeWeights as optimizeWeightsApi,
   getBacktestTasks, getStrategyMeta,
 } from '@/api/strategy'
 import InstrumentSelect from '@/components/InstrumentSelect.vue'
+import StrategyBacktestDialog from '@/components/strategy/StrategyBacktestDialog.vue'
+import StrategyOptimizeDialog from '@/components/strategy/StrategyOptimizeDialog.vue'
 import { useStrategyStore } from '@/stores/strategy'
 import { useConfirm } from '@/composables/useConfirm'
 import { useFormDraft } from '@/composables/useFormDraft'
 import { ElMessage } from 'element-plus'
-import { Plus, Search, RefreshLeft, Delete, Loading, ArrowDown } from '@element-plus/icons-vue'
+import { Plus, Search, RefreshLeft, ArrowDown } from '@element-plus/icons-vue'
 import { formatDateTime } from '@/utils/time'
 
 const strategyStore = useStrategyStore()
 const { confirm } = useConfirm()
-const { loadDraft, saveDraft, clearDraft, hasDraft } = useFormDraft('strategy_edit', {})
+const { loadDraft, saveDraft, clearDraft } = useFormDraft('strategy_edit', {})
 const isNew = ref(true)
 const shortcutHelp = inject('shortcutHelp', null)
 const showGuide = ref(!localStorage.getItem('strategy_guide_dismissed'))
 function openHelp() { shortcutHelp?.open() }
 function onGuideClose() { localStorage.setItem('strategy_guide_dismissed', '1'); showGuide.value = false }
 
-// 策略类型与参数元数据（从后端动态获取，新增策略无需改前端）
+// 策略类型与参数元数据（从后端动态获取）
 const strategyMetaList = ref([])
 const STRATEGY_TYPE_OPTIONS = computed(() =>
   strategyMetaList.value.map((m) => ({ label: m.name, value: m.code }))
@@ -416,32 +444,14 @@ const tableData = ref([])
 const loading = ref(false)
 const dialogVisible = ref(false)
 const backtestVisible = ref(false)
-const btLoading = ref(false)
-const btStart = ref('')
-const btEnd = ref('')
-const btFeeRate = ref(0.001)
-const btSlippage = ref(0.001)
 const btStrategyId = ref(null)
-
-// 优化相关
+const btStrategyName = ref('')
 const optVisible = ref(false)
-const optTab = ref('params')
 const optStrategyId = ref(null)
-const optStart = ref('')
-const optEnd = ref('')
-const optLoading = ref(false)
-const optResults = ref([])
-const gridRows = ref([])
-const wtStart = ref('')
-const wtEnd = ref('')
-const wtIterations = ref(10)
-const wtLoading = ref(false)
-const wtResult = ref(null)
 
 // 回测任务（异步）
 const btTasks = ref([])
 const taskPollTimer = ref(null)
-const taskPolling = ref(false)
 
 const activeTasks = computed(() =>
   btTasks.value.filter((t) => t.state === 'STARTED' || t.state === 'PENDING' || t.state === 'RECEIVED')
@@ -457,13 +467,11 @@ const taskStateType = (s) => ({
   SUCCESS: 'success', FAILURE: 'danger',
 }[s] || 'info')
 
-const loadingProgress = ref(60)
 const loadBtTasks = async () => {
   try {
     const res = await getBacktestTasks()
     const rows = res.results || []
     const prev = btTasks.value
-    // 合并策略名
     for (const r of rows) {
       const old = prev.find((p) => p.task_id === r.task_id)
       if (old && !r.result?.strategy_name) r.strategy_name = old.strategy_name
@@ -473,7 +481,6 @@ const loadBtTasks = async () => {
       }
     }
     btTasks.value = rows
-    // 有任务完成时刷新表格（回测结果可能变化）
     if (prev.some((p) => p.state !== 'SUCCESS' && p.state !== 'FAILURE') &&
         rows.every((r) => r.state === 'SUCCESS' || r.state === 'FAILURE')) {
       load()
@@ -495,19 +502,22 @@ const stopTaskPolling = () => {
 }
 
 // 筛选与分页
-const filters = ref({ keyword: '', strategy_type: '', inst_type: '', status: '', direction: '' })
+const filters = ref({ keyword: '', strategy_type: '', status: '', direction: '' })
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(10)
 
+const runningCount = computed(() => tableData.value.filter((s) => s.status === 'active').length)
+const pausedCount = computed(() => tableData.value.filter((s) => s.status === 'paused').length)
+const draftCount = computed(() => tableData.value.filter((s) => s.status === 'draft').length)
+
 const form = ref({})
 const factorsStr = ref('')
 
-// 当前策略类型对应的 meta（含参数 schema）
 const currentMeta = computed(() =>
   strategyMetaList.value.find((m) => m.code === form.value.strategy_type)
 )
-// 根据策略类型获取参数默认值（从 meta schema 动态生成）
+
 const defaultParamsFor = (type) => {
   const meta = strategyMetaList.value.find((m) => m.code === type)
   const defaults = {}
@@ -516,7 +526,7 @@ const defaultParamsFor = (type) => {
   }
   return defaults
 }
-// 合并用户已保存参数与默认参数
+
 const mergeParams = (type, raw) => ({ ...defaultParamsFor(type), ...(raw || {}) })
 
 const loadMeta = async () => {
@@ -547,92 +557,9 @@ const load = async () => {
 
 const onSearch = () => { page.value = 1; load() }
 const onReset = () => {
-  filters.value = { keyword: '', strategy_type: '', inst_type: '', status: '', direction: '' }
+  filters.value = { keyword: '', strategy_type: '', status: '', direction: '' }
   page.value = 1
   load()
-}
-
-const showOptimize = (row) => {
-  optStrategyId.value = row.id
-  optTab.value = 'params'
-  optResults.value = []
-  wtResult.value = null
-  gridRows.value = [{ key: 'vol_ratio', values: '1.5,1.8,2.0' }]
-  optStart.value = ''
-  optEnd.value = ''
-  wtStart.value = ''
-  wtEnd.value = ''
-  optVisible.value = true
-}
-
-const addGridRow = () => { gridRows.value.push({ key: '', values: '' }) }
-
-const buildParamGrid = () => {
-  const grid = {}
-  for (const g of gridRows.value) {
-    if (!g.key || !g.values) continue
-    grid[g.key] = g.values.split(',').map(s => s.trim()).filter(Boolean).map(s => {
-      const n = Number(s)
-      return isNaN(n) ? s : n
-    })
-  }
-  return grid
-}
-
-const runParamOptimize = async () => {
-  const grid = buildParamGrid()
-  if (!Object.keys(grid).length) { ElMessage.warning('请配置参数网格'); return }
-  optLoading.value = true
-  try {
-    const res = await optimizeParamsApi(optStrategyId.value, {
-      param_grid: grid, start_date: optStart.value || undefined, end_date: optEnd.value || undefined,
-    })
-    // 异步任务提交（202），加入任务列表轮询
-    if (res.submitted) {
-      btTasks.value.unshift({
-        task_id: res.task_id,
-        strategy_id: optStrategyId.value,
-        strategy_name: tableData.value.find((x) => x.id === optStrategyId.value)?.name,
-        task_type: '参数优化',
-        state: 'PENDING',
-        result: {},
-        created_at: new Date().toISOString(),
-      })
-      ElMessage.success('参数优化任务已提交，正在后台执行…')
-      startTaskPolling()
-    } else {
-      optResults.value = res.results || []
-      ElMessage.success(`网格搜索完成，共 ${optResults.value.length} 组结果`)
-    }
-  } catch (e) { ElMessage.error(e.message) }
-  optLoading.value = false
-}
-
-const runWeightOptimize = async () => {
-  wtLoading.value = true
-  try {
-    const res = await optimizeWeightsApi(optStrategyId.value, {
-      start_date: wtStart.value || undefined, end_date: wtEnd.value || undefined,
-      iterations: wtIterations.value,
-    })
-    if (res.submitted) {
-      btTasks.value.unshift({
-        task_id: res.task_id,
-        strategy_id: optStrategyId.value,
-        strategy_name: tableData.value.find((x) => x.id === optStrategyId.value)?.name,
-        task_type: '权重优化',
-        state: 'PENDING',
-        result: {},
-        created_at: new Date().toISOString(),
-      })
-      ElMessage.success('权重优化任务已提交，正在后台执行…')
-      startTaskPolling()
-    } else {
-      wtResult.value = res
-      ElMessage.success('权重优化完成')
-    }
-  } catch (e) { ElMessage.error(e.message) }
-  wtLoading.value = false
 }
 
 const openDialog = (row) => {
@@ -644,7 +571,6 @@ const openDialog = (row) => {
     isNew.value = true
     const defaultForm = { strategy_type: strategyMetaList.value[0]?.code || 'factor_composite', inst_type: 'SWAP', symbols: [], params: {}, bar: '5m', direction: 'both', td_mode: 'cross', leverage: 3, initial_capital: 10000, order_size_pct: 0.1, max_positions: 5, stop_loss_pct: 0.05, take_profit_pct: 0.1, status: 'draft' }
     defaultForm.params = defaultParamsFor(defaultForm.strategy_type)
-    // 恢复未保存的草稿（表单持久化）
     const restored = loadDraft()
     if (restored && Object.keys(restored).length > 1) {
       form.value = { ...defaultForm, ...restored, params: mergeParams(restored.strategy_type || defaultForm.strategy_type, restored.params) }
@@ -697,10 +623,12 @@ const remove = async (row) => {
     load()
   } catch (e) { ElMessage.error(e.message) }
 }
+
 const runSignals = async (id) => {
   try { await runSignalsApi(id); ElMessage.success('信号已生成'); load() }
   catch (e) { ElMessage.error(e.message) }
 }
+
 const executeSignals = async (id) => {
   try { await execSignalsApi(id); ElMessage.success('信号已执行') }
   catch (e) { ElMessage.error(e.message) }
@@ -716,52 +644,81 @@ const handleMore = (row, cmd) => {
 
 const showBacktest = (row) => {
   btStrategyId.value = row.id
-  // 默认最近30天
-  const end = new Date()
-  const start = new Date()
-  start.setDate(start.getDate() - 30)
-  const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-  btStart.value = fmt(start)
-  btEnd.value = fmt(end)
+  btStrategyName.value = row.name
   backtestVisible.value = true
 }
 
-const runBacktest = async () => {
-  if (!btStart.value || !btEnd.value) { ElMessage.warning('请选择日期'); return }
-  btLoading.value = true
-  try {
-    const res = await runBacktestApi(btStrategyId.value, {
-      start_date: btStart.value, end_date: btEnd.value,
-      fee_rate: btFeeRate.value, slippage: btSlippage.value,
+const submitBacktest = async (payload) => {
+  const res = await runBacktestApi(btStrategyId.value, payload)
+  if (res.submitted) {
+    const strategy = tableData.value.find((x) => x.id === btStrategyId.value)
+    btTasks.value.unshift({
+      task_id: res.task_id,
+      strategy_id: res.strategy_id,
+      strategy_name: strategy?.name || res.strategy_name,
+      state: 'PENDING',
+      result: {},
+      created_at: new Date().toISOString(),
     })
-    // 异步任务提交成功（202），加入任务列表并轮询
-    if (res.submitted) {
-      const strategy = tableData.value.find((x) => x.id === btStrategyId.value)
-      btTasks.value.unshift({
-        task_id: res.task_id,
-        strategy_id: res.strategy_id,
-        strategy_name: strategy?.name || res.strategy_name,
-        state: 'PENDING',
-        result: {},
-        created_at: new Date().toISOString(),
-      })
-      ElMessage.success('回测任务已提交，正在后台执行…')
-      startTaskPolling()
-    } else {
-      ElMessage.success('回测完成')
-    }
-    backtestVisible.value = false
-  } catch (e) { ElMessage.error(e.message) }
-  btLoading.value = false
+    ElMessage.success('回测任务已提交，正在后台执行…')
+    startTaskPolling()
+  } else {
+    ElMessage.success('回测完成')
+  }
+}
+
+const showOptimize = (row) => {
+  optStrategyId.value = row.id
+  optVisible.value = true
+}
+
+const submitParamOptimize = async (payload) => {
+  const res = await optimizeParamsApi(optStrategyId.value, payload)
+  if (res.submitted) {
+    btTasks.value.unshift({
+      task_id: res.task_id,
+      strategy_id: optStrategyId.value,
+      strategy_name: tableData.value.find((x) => x.id === optStrategyId.value)?.name,
+      task_type: '参数优化',
+      state: 'PENDING',
+      result: {},
+      created_at: new Date().toISOString(),
+    })
+    ElMessage.success('参数优化任务已提交，正在后台执行…')
+    startTaskPolling()
+  }
+  return res
+}
+
+const submitWeightOptimize = async (payload) => {
+  const res = await optimizeWeightsApi(optStrategyId.value, payload)
+  if (res.submitted) {
+    btTasks.value.unshift({
+      task_id: res.task_id,
+      strategy_id: optStrategyId.value,
+      strategy_name: tableData.value.find((x) => x.id === optStrategyId.value)?.name,
+      task_type: '权重优化',
+      state: 'PENDING',
+      result: {},
+      created_at: new Date().toISOString(),
+    })
+    ElMessage.success('权重优化任务已提交，正在后台执行…')
+    startTaskPolling()
+  }
+  return res
 }
 
 onMounted(async () => {
   await loadMeta()
   load()
-  // 恢复进行中的回测任务轮询
   loadBtTasks().then(() => {
     if (activeTasks.value.length) startTaskPolling()
   })
+})
+
+// 多 tab 缓存后重新激活：刷新列表数据
+onActivated(() => {
+  if (!loading.value) load()
 })
 
 onBeforeUnmount(stopTaskPolling)
@@ -769,15 +726,46 @@ onBeforeUnmount(stopTaskPolling)
 
 <style scoped>
 .page-header { display: flex; justify-content: space-between; align-items: center; }
+.header-left { display: flex; align-items: baseline; gap: 12px; }
+.subtitle { color: #909399; font-size: 13px; }
+.stats-row { margin-top: 16px; }
+.stat-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 8px;
+  background: var(--app-header-bg);
+  border: 1px solid var(--app-header-border);
+  transition: transform .2s, box-shadow .2s;
+}
+.stat-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,.08); }
+.stat-icon {
+  width: 44px; height: 44px;
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px;
+}
+.total .stat-icon { background: #ecf5ff; color: #409eff; }
+.running .stat-icon { background: #f0f9eb; color: #67c23a; }
+.paused .stat-icon { background: #fdf6ec; color: #e6a23c; }
+.draft .stat-icon { background: #f4f4f5; color: #909399; }
+.stat-value { font-size: 22px; font-weight: 700; }
+.stat-label { color: #909399; font-size: 12px; margin-top: 2px; }
 .guide-alert { margin-top: 16px; }
 .guide-text { font-size: 13px; line-height: 1.8; }
 .filter-bar { margin-top: 16px; }
 .filter-bar :deep(.el-card__body) { padding: 16px 16px 0; }
 .pager { margin-top: 16px; justify-content: flex-end; display: flex; }
 .hint { color: #909399; font-size: 12px; margin-left: 8px; }
-.strategy-desc { color: #909399; font-size: 12px; line-height: 1.5; margin-top: 4px; }
+.strategy-desc { color: #909399; font-size: 12px; line-height: 1.5; }
 .tasks-header { display: flex; align-items: center; justify-content: space-between; }
 .task-id { font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; color: #909399; }
-.grid-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; width: 100%; }
-.wt-result { margin-top: 16px; padding: 12px; background: #f5f7fa; border-radius: 6px; }
+.strategy-cell { display: flex; flex-direction: column; gap: 4px; }
+.s-name { font-weight: 600; }
+.s-tags { display: flex; gap: 4px; flex-wrap: wrap; }
+.symbol-tags { display: flex; flex-wrap: wrap; }
+.bt-cell { display: flex; flex-direction: column; gap: 2px; }
+.bt-sub { color: #909399; font-size: 12px; }
+.bt-empty { color: #c0c4cc; font-size: 12px; }
 </style>

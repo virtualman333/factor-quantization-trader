@@ -102,9 +102,6 @@
             </el-badge>
           </el-tooltip>
 
-          <el-tooltip :content="theme.isDark ? '切换到浅色模式' : '切换到深色模式'" placement="bottom">
-            <el-button :icon="theme.isDark ? Sunny : Moon" circle @click="theme.toggle" />
-          </el-tooltip>
           <el-dropdown @command="handleEnvCommand" :disabled="connectionStore.loading">
             <el-button size="small" :type="connectionStore.environment === 'live' ? 'danger' : 'primary'">
               {{ connectionStore.envLabel }}
@@ -185,8 +182,13 @@
           </el-dropdown>
         </div>
       </el-header>
+      <TagBar />
       <el-main class="main">
-        <router-view />
+        <router-view v-slot="{ Component, route: r }">
+          <keep-alive :include="includeViews">
+            <component :is="Component" :key="r.path" />
+          </keep-alive>
+        </router-view>
       </el-main>
     </el-container>
   </el-container>
@@ -204,7 +206,9 @@ import { useConnectionStore } from '@/stores/connection.js'
 import { useRealtimeStore } from '@/stores/realtime.js'
 import { useAuthStore } from '@/stores/auth.js'
 import { useNotificationStore } from '@/stores/notifications.js'
+import { useTabsStore } from '@/stores/tabs.js'
 import NotificationCenter from '@/components/NotificationCenter.vue'
+import TagBar from '@/components/TagBar.vue'
 import { useTheme } from '@/composables/useTheme.js'
 import { useKeyboard } from '@/composables/useKeyboard.js'
 import { useConfirm } from '@/composables/useConfirm.js'
@@ -216,6 +220,7 @@ const connectionStore = useConnectionStore()
 const realtimeStore = useRealtimeStore()
 const authStore = useAuthStore()
 const notifyStore = useNotificationStore()
+const tabsStore = useTabsStore()
 const theme = useTheme()
 const { confirm } = useConfirm()
 const { registerShortcut } = useKeyboard()
@@ -291,10 +296,39 @@ registerShortcut({
   handler: () => { drawerVisible.value = !drawerVisible.value },
 })
 
-// 路由切换时，移动端自动收起侧边栏
+// 路由切换时，移动端自动收起侧边栏 + 同步多 tab 标签
 watch(() => route.path, () => {
   if (isMobile.value) isCollapse.value = true
+  tabsStore.addTab(route)
 })
+
+// 标签刷新机制：从 keep-alive include 中移除组件名使其重建
+const includeViews = ref([])
+// 同步 tabs store 的缓存视图列表
+watch(
+  () => tabsStore.cachedViews,
+  (views) => { includeViews.value = [...views] },
+  { immediate: true }
+)
+watch(
+  () => tabsStore.refreshQueue.length,
+  () => {
+    const queue = [...tabsStore.refreshQueue]
+    if (!queue.length) return
+    tabsStore.consumeRefresh()
+    queue.forEach((path) => {
+      const name = tabsStore.tabs.find((t) => t.path === path)?.name
+      if (!name) return
+      const idx = includeViews.value.indexOf(name)
+      if (idx !== -1) {
+        includeViews.value.splice(idx, 1) // 移除 → keep-alive 销毁该实例
+        setTimeout(() => {
+          if (!includeViews.value.includes(name)) includeViews.value.push(name) // 恢复 → 重新挂载
+        }, 100)
+      }
+    })
+  }
+)
 
 onMounted(async () => {
   window.addEventListener('resize', onResize)

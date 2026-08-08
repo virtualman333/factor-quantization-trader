@@ -85,6 +85,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'DataAnalysis' })
 import { ref, computed, onMounted } from 'vue'
 import { getCorrelationMatrix, getFactorIC, getMarketState } from '@/api/dashboard'
 import { getStrategies } from '@/api/strategy'

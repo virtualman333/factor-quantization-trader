@@ -1,44 +1,83 @@
 <template>
   <div>
     <div class="page-header">
-      <div class="title-wrap">
+      <div class="header-left">
         <h2>回测结果</h2>
-        <el-tooltip placement="right" :show-after="300">
-          <template #content>
-            <div style="max-width:260px;line-height:1.6">
-              <div><b>回测是什么？</b></div>
-              <div>用历史行情数据模拟策略表现，验证策略是否能在实盘盈利。建议先用回测确认策略逻辑，再谨慎用于实盘。</div>
-            </div>
-          </template>
-          <el-icon class="tip-icon"><QuestionFilled /></el-icon>
-        </el-tooltip>
+        <span class="subtitle">验证策略历史表现，评估风险与收益</span>
       </div>
       <el-button :icon="Refresh" @click="load">刷新</el-button>
     </div>
 
-    <el-table :data="tableData" v-loading="loading" border stripe style="margin-top:16px" @row-click="showDetail">
-      <el-table-column prop="strategy_name" label="策略" width="150">
-        <template #header>
-          <span>策略</span>
-          <el-tooltip placement="top" :show-after="300">
-            <template #content>产生该回测的策略名称</template>
-            <el-icon class="tip-inline"><QuestionFilled /></el-icon>
-          </el-tooltip>
+    <!-- 统计概览 -->
+    <el-row :gutter="16" class="stats-row">
+      <el-col :span="6">
+        <div class="stat-card">
+          <div class="stat-icon blue"><el-icon><Histogram /></el-icon></div>
+          <div class="stat-body">
+            <div class="stat-value">{{ total }}</div>
+            <div class="stat-label">回测总数</div>
+          </div>
+        </div>
+      </el-col>
+      <el-col :span="6">
+        <div class="stat-card">
+          <div class="stat-icon green"><el-icon><TrendCharts /></el-icon></div>
+          <div class="stat-body">
+            <div class="stat-value" :style="{ color: avgReturn >= 0 ? '#67c23a' : '#f56c6c' }">{{ pct(avgReturn, 1) }}%</div>
+            <div class="stat-label">平均收益</div>
+          </div>
+        </div>
+      </el-col>
+      <el-col :span="6">
+        <div class="stat-card">
+          <div class="stat-icon orange"><el-icon><DataLine /></el-icon></div>
+          <div class="stat-body">
+            <div class="stat-value">{{ bestReturnStrategy || '--' }}</div>
+            <div class="stat-label">最佳策略</div>
+          </div>
+        </div>
+      </el-col>
+      <el-col :span="6">
+        <div class="stat-card">
+          <div class="stat-icon purple"><el-icon><Odometer /></el-icon></div>
+          <div class="stat-body">
+            <div class="stat-value">{{ winBacktestCount }}/{{ total || 0 }}</div>
+            <div class="stat-label">盈利回测</div>
+          </div>
+        </div>
+      </el-col>
+    </el-row>
+
+    <!-- 筛选栏 -->
+    <el-card shadow="never" class="filter-bar">
+      <el-form :inline="true" @submit.prevent>
+        <el-form-item label="策略">
+          <el-select v-model="filterStrategy" placeholder="全部策略" clearable filterable style="width:200px" @change="onFilterChange">
+            <el-option v-for="s in strategyOptions" :key="s.id" :label="s.name" :value="s.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="结果">
+          <el-select v-model="filterResult" placeholder="全部" clearable style="width:120px" @change="onFilterChange">
+            <el-option label="盈利" value="profit" />
+            <el-option label="亏损" value="loss" />
+          </el-select>
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" :icon="Refresh" @click="load">刷新</el-button>
+        </el-form-item>
+      </el-form>
+    </el-card>
+
+    <el-table :data="pagedData" v-loading="loading" border stripe style="margin-top:16px" @row-click="showDetail">
+      <el-table-column label="策略" min-width="140">
+        <template #default="{ row }">
+          <div class="strategy-cell">
+            <span class="s-name">{{ row.strategy_name }}</span>
+            <span class="s-date">{{ fmtDate(row.start_date) }} ~ {{ fmtDate(row.end_date) }}</span>
+          </div>
         </template>
       </el-table-column>
-      <el-table-column prop="start_date" label="开始日期" width="120">
-        <template #default="{ row }">{{ fmtDate(row.start_date) }}</template>
-      </el-table-column>
-      <el-table-column prop="end_date" label="结束日期" width="120">
-        <template #default="{ row }">{{ fmtDate(row.end_date) }}</template>
-      </el-table-column>
-      <el-table-column prop="initial_capital" label="初始资金" width="120" align="right">
-        <template #default="{ row }">{{ fmtNum(row.initial_capital) }}</template>
-      </el-table-column>
-      <el-table-column prop="final_capital" label="最终资金" width="130" align="right">
-        <template #default="{ row }">{{ fmtNum(row.final_capital) }}</template>
-      </el-table-column>
-      <el-table-column prop="total_return" label="总收益率" width="110">
+      <el-table-column label="总收益率" width="120">
         <template #header>
           <span>总收益率</span>
           <el-tooltip placement="top" :show-after="300">
@@ -47,51 +86,35 @@
           </el-tooltip>
         </template>
         <template #default="{ row }">
-          <span :style="{ color: pctNum(row.total_return) >= 0 ? '#67c23a' : '#f56c6c' }">{{ pct(row.total_return) }}%</span>
+          <div class="return-cell">
+            <span class="return-value" :style="{ color: pctNum(row.total_return) >= 0 ? '#67c23a' : '#f56c6c' }">
+              {{ pct(row.total_return) }}%
+            </span>
+            <span class="capital-sub">{{ fmtNum(row.initial_capital) }} → {{ fmtNum(row.final_capital) }}</span>
+          </div>
         </template>
       </el-table-column>
-      <el-table-column prop="sharpe_ratio" label="夏普比" width="90" align="right">
-        <template #header>
-          <span>夏普比</span>
-          <el-tooltip placement="top" :show-after="300">
-            <template #content>(收益率 - 无风险利率) / 波动率；越高代表单位风险获得的超额收益越好</template>
-            <el-icon class="tip-inline"><QuestionFilled /></el-icon>
-          </el-tooltip>
-        </template>
+      <el-table-column label="夏普比" width="100" align="center">
         <template #default="{ row }">{{ row.sharpe_ratio != null ? Number(row.sharpe_ratio).toFixed(2) : '--' }}</template>
       </el-table-column>
-      <el-table-column prop="max_drawdown" label="最大回撤" width="110">
-        <template #header>
-          <span>最大回撤</span>
-          <el-tooltip placement="top" :show-after="300">
-            <template #content>从权益峰值跌到谷底的最大百分比，反映最坏情况下的亏损幅度</template>
-            <el-icon class="tip-inline"><QuestionFilled /></el-icon>
-          </el-tooltip>
-        </template>
+      <el-table-column label="最大回撤" width="110">
         <template #default="{ row }">
           <span style="color:#f56c6c">{{ pct(row.max_drawdown) }}%</span>
         </template>
       </el-table-column>
-      <el-table-column prop="win_rate" label="胜率" width="90">
-        <template #header>
-          <span>胜率</span>
-          <el-tooltip placement="top" :show-after="300">
-            <template #content>盈利交易次数 / 总交易次数</template>
-            <el-icon class="tip-inline"><QuestionFilled /></el-icon>
-          </el-tooltip>
-        </template>
+      <el-table-column label="胜率" width="90">
         <template #default="{ row }">{{ pct(row.win_rate, 1) }}%</template>
       </el-table-column>
-      <el-table-column prop="total_trades" label="交易次数" width="90" align="right" />
-      <el-table-column prop="profit_factor" label="盈亏比" width="90" align="right">
-        <template #header>
-          <span>盈亏比</span>
-          <el-tooltip placement="top" :show-after="300">
-            <template #content>平均盈利 / 平均亏损的绝对值；大于 1 代表盈利额大于亏损额</template>
-            <el-icon class="tip-inline"><QuestionFilled /></el-icon>
-          </el-tooltip>
-        </template>
+      <el-table-column label="盈亏比" width="90" align="center">
         <template #default="{ row }">{{ row.profit_factor != null ? Number(row.profit_factor).toFixed(2) : '--' }}</template>
+      </el-table-column>
+      <el-table-column label="交易次数" width="90" align="center">
+        <template #default="{ row }">
+          <el-tag size="small" effect="plain">{{ row.total_trades }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="时间" width="160">
+        <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
       </el-table-column>
       <el-table-column label="操作" width="180" fixed="right" align="center">
         <template #default="{ row }">
@@ -106,17 +129,15 @@
       <el-pagination
         v-model:current-page="page"
         v-model:page-size="pageSize"
-        :total="total"
+        :total="filteredData.length"
         :page-sizes="[10, 20, 50, 100]"
         layout="total, sizes, prev, pager, next, jumper"
         background
-        @size-change="load"
-        @current-change="load"
       />
     </div>
 
     <!-- 详情弹窗 -->
-    <el-dialog v-model="detailVisible" width="960px" top="5vh" :close-on-click-modal="false">
+    <el-dialog v-model="detailVisible" width="980px" top="5vh" :close-on-click-modal="false">
       <template #header>
         <div class="detail-header">
           <span>回测详情 - {{ selected?.strategy_name }}</span>
@@ -129,9 +150,9 @@
       </template>
       <el-tabs v-model="activeTab">
         <el-tab-pane label="核心指标" name="metrics">
-          <el-row :gutter="20">
-            <el-col :span="6" v-for="m in metrics" :key="m.label" style="margin-bottom:16px">
-              <el-card shadow="hover">
+          <el-row :gutter="16">
+            <el-col :span="6" v-for="m in metrics" :key="m.label" style="margin-bottom:14px">
+              <div class="metric-card" :style="{ borderTopColor: m.color }">
                 <div class="metric-label">
                   {{ m.label }}
                   <el-tooltip v-if="m.tip" placement="top" :show-after="300">
@@ -140,7 +161,7 @@
                   </el-tooltip>
                 </div>
                 <div class="metric-value" :style="{ color: m.color }">{{ m.value }}</div>
-              </el-card>
+              </div>
             </el-col>
           </el-row>
           <el-card>
@@ -159,30 +180,30 @@
             <el-table-column prop="timestamp" label="时间" width="170">
               <template #default="{ row }">{{ fmtDateTime(row.timestamp) }}</template>
             </el-table-column>
-            <el-table-column prop="symbol" label="品种" width="120" />
-            <el-table-column prop="action" label="方向" width="80" align="center">
+            <el-table-column prop="symbol" label="品种" width="130" />
+            <el-table-column prop="action" label="方向" width="90" align="center">
               <template #default="{ row }">
                 <el-tag size="small" :type="row.action === 'buy' ? 'success' : 'danger'">
                   {{ row.action === 'buy' ? '买入' : '卖出' }}
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="price" label="价格" width="110" align="right">
+            <el-table-column prop="price" label="价格" width="120" align="right">
               <template #default="{ row }">{{ fmtNum(row.price) }}</template>
             </el-table-column>
-            <el-table-column prop="amount" label="金额" width="120" align="right">
+            <el-table-column prop="amount" label="金额" width="130" align="right">
               <template #default="{ row }">{{ fmtNum(row.amount) }}</template>
             </el-table-column>
-            <el-table-column prop="fee" label="手续费" width="100" align="right">
+            <el-table-column prop="fee" label="手续费" width="110" align="right">
               <template #default="{ row }">{{ fmtNum(row.fee) }}</template>
             </el-table-column>
-            <el-table-column prop="pnl" label="盈亏" width="120" align="right">
+            <el-table-column prop="pnl" label="盈亏" width="130" align="right">
               <template #default="{ row }">
                 <span v-if="row.pnl !== undefined && row.pnl !== null" :style="{ color: Number(row.pnl) >= 0 ? '#67c23a' : '#f56c6c' }">{{ Number(row.pnl).toFixed(2) }}</span>
                 <span v-else>--</span>
               </template>
             </el-table-column>
-            <el-table-column prop="capital" label="权益" width="130" align="right">
+            <el-table-column prop="capital" label="权益" width="140" align="right">
               <template #default="{ row }">{{ fmtNum(row.capital) }}</template>
             </el-table-column>
           </el-table>
@@ -213,7 +234,8 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+defineOptions({ name: 'Backtests' })
+import { ref, computed, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   getBacktests, getBacktestDetail,
@@ -223,6 +245,7 @@ import { ElMessage } from 'element-plus'
 import {
   Refresh, View, Download, QuestionFilled, Histogram, DataLine,
 } from '@element-plus/icons-vue'
+import { formatDate, formatDateTime } from '@/utils/time'
 
 const router = useRouter()
 import VChart from 'vue-echarts'
@@ -230,11 +253,10 @@ import { use } from 'echarts/core'
 import { LineChart, BarChart } from 'echarts/charts'
 import { TitleComponent, TooltipComponent, GridComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
-import { formatDate, formatDateTime } from '@/utils/time'
 use([LineChart, BarChart, TitleComponent, TooltipComponent, GridComponent, CanvasRenderer])
 
 // ========== 状态 ==========
-const tableData = ref([])
+const allData = ref([])
 const loading = ref(false)
 const detailVisible = ref(false)
 const selected = ref(null)
@@ -244,11 +266,56 @@ const mcResult = ref(null)
 
 const page = ref(1)
 const pageSize = ref(20)
-const total = ref(0)
+
+const filterStrategy = ref(null)
+const filterResult = ref('')
+
+// 策略选项（去重）
+const strategyOptions = computed(() => {
+  const seen = new Map()
+  for (const r of allData.value) {
+    if (!seen.has(r.strategy_id) && r.strategy_name) {
+      seen.set(r.strategy_id, { id: r.strategy_id, name: r.strategy_name })
+    }
+  }
+  return [...seen.values()]
+})
+
+const filteredData = computed(() => {
+  let rows = allData.value
+  if (filterStrategy.value != null && filterStrategy.value !== '') {
+    rows = rows.filter((r) => r.strategy_id === filterStrategy.value)
+  }
+  if (filterResult.value === 'profit') rows = rows.filter((r) => Number(r.total_return) > 0)
+  if (filterResult.value === 'loss') rows = rows.filter((r) => Number(r.total_return) <= 0)
+  return rows
+})
+
+const pagedData = computed(() => {
+  const start = (page.value - 1) * pageSize.value
+  return filteredData.value.slice(start, start + pageSize.value)
+})
+
+const total = computed(() => filteredData.value.length)
+
+// 统计概览
+const avgReturn = computed(() => {
+  if (!allData.value.length) return 0
+  return allData.value.reduce((s, r) => s + Number(r.total_return || 0), 0) / allData.value.length
+})
+const bestReturnStrategy = computed(() => {
+  if (!allData.value.length) return null
+  const best = [...allData.value].sort((a, b) => Number(b.total_return || 0) - Number(a.total_return || 0))[0]
+  return best.total_return > 0 ? best.strategy_name : null
+})
+const winBacktestCount = computed(() =>
+  allData.value.filter((r) => Number(r.total_return) > 0).length
+)
+
+const onFilterChange = () => { page.value = 1 }
 
 // ========== 格式化辅助 ==========
 function pctNum(v) {
-  // 把后端传的 Decimal/string/number 统一转为浮点数（例如 0.0523 -> 5.23）
   if (v === null || v === undefined || v === '') return 0
   const n = parseFloat(v)
   if (isNaN(n)) return 0
@@ -263,14 +330,8 @@ function fmtNum(v, digits = 2) {
   if (isNaN(n)) return '--'
   return n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })
 }
-function fmtDate(v) {
-  // 统一按北京时间显示
-  return formatDate(v)
-}
-function fmtDateTime(v) {
-  // 统一按北京时间显示
-  return formatDateTime(v)
-}
+function fmtDate(v) { return formatDate(v) }
+function fmtDateTime(v) { return formatDateTime(v) }
 
 // ========== 派生数据 ==========
 const metrics = computed(() => {
@@ -282,11 +343,11 @@ const metrics = computed(() => {
   const winRate = pctNum(d.win_rate)
   return [
     { label: '总收益率', value: `${totalReturn.toFixed(2)}%`, color: totalReturn >= 0 ? '#67c23a' : '#f56c6c', tip: '整个回测区间的累计收益率' },
-    { label: '年化收益率', value: `${annualReturn.toFixed(2)}%`, color: '#409eff', tip: '把区间收益率折算成一年的收益率，方便不同时长回测对比' },
-    { label: '夏普比率', value: d.sharpe_ratio != null ? Number(d.sharpe_ratio).toFixed(2) : '--', color: '#409eff', tip: '越高代表承担单位风险获得的超额收益越好，通常 > 1 较好' },
-    { label: '最大回撤', value: `${maxDD.toFixed(2)}%`, color: '#f56c6c', tip: '权益从峰值跌到谷底的最坏百分比，用于评估极端风险' },
+    { label: '年化收益率', value: `${annualReturn.toFixed(2)}%`, color: '#409eff', tip: '把区间收益率折算成一年的收益率' },
+    { label: '夏普比率', value: d.sharpe_ratio != null ? Number(d.sharpe_ratio).toFixed(2) : '--', color: '#409eff', tip: '承担单位风险获得的超额收益，>1 较好' },
+    { label: '最大回撤', value: `${maxDD.toFixed(2)}%`, color: '#f56c6c', tip: '权益从峰值跌到谷底的最坏百分比' },
     { label: '胜率', value: `${winRate.toFixed(1)}%`, color: '#67c23a', tip: '盈利交易次数 / 总交易次数' },
-    { label: '盈亏比', value: d.profit_factor != null ? Number(d.profit_factor).toFixed(2) : '--', color: '#409eff', tip: '平均盈利 ÷ 平均亏损的绝对值；> 1 说明赚的比亏的多' },
+    { label: '盈亏比', value: d.profit_factor != null ? Number(d.profit_factor).toFixed(2) : '--', color: '#409eff', tip: '平均盈利 ÷ 平均亏损的绝对值' },
     { label: '交易次数', value: d.total_trades ?? '--', color: '#606266', tip: '回测期间触发的买卖总次数' },
     { label: '初始→最终资金', value: `${fmtNum(d.initial_capital)} → ${fmtNum(d.final_capital)}`, color: '#909399', tip: '回测开始与结束时的账户权益' },
   ]
@@ -304,7 +365,7 @@ const mcChartOption = computed(() => {
       },
     },
     grid: { left: 70, right: 20, top: 20, bottom: 40 },
-    xAxis: { type: 'category', data: dds.map((_, i) => i + 1), axisLabel: { rotate: 0 } },
+    xAxis: { type: 'category', data: dds.map((_, i) => i + 1) },
     yAxis: { type: 'value', axisLabel: { formatter: (v) => (v * 100).toFixed(0) + '%' } },
     series: [{
       name: '最大回撤分布', type: 'bar', data: dds,
@@ -362,16 +423,13 @@ const chartOption = computed(() => {
 const load = async () => {
   loading.value = true
   try {
-    const res = await getBacktests({ page: page.value, page_size: pageSize.value })
+    const res = await getBacktests({ page: 1, page_size: 200 })
     if (res && Array.isArray(res.results)) {
-      tableData.value = res.results
-      total.value = res.count ?? res.results.length
+      allData.value = res.results
     } else if (Array.isArray(res)) {
-      tableData.value = res
-      total.value = res.length
+      allData.value = res
     } else {
-      tableData.value = []
-      total.value = 0
+      allData.value = []
     }
   } catch (e) { ElMessage.error(e.message || '加载回测列表失败') }
   loading.value = false
@@ -381,23 +439,19 @@ const showDetail = async (row) => {
   selected.value = row
   mcResult.value = null
   activeTab.value = 'metrics'
-  // 如果已缓存过 MC 结果，直接恢复显示
   if (row.monte_carlo && row.monte_carlo.status === 'success' && row.monte_carlo.result) {
     mcResult.value = row.monte_carlo.result
   }
   detailVisible.value = true
-  // 异步加载完整详情（确保 trade_detail / equity_curve 完整）
   try {
     const full = await getBacktestDetail(row.id)
     selected.value = { ...row, ...full }
-    // 从详情数据再次检查 MC 缓存
     if (full.monte_carlo && full.monte_carlo.status === 'success' && full.monte_carlo.result) {
       mcResult.value = full.monte_carlo.result
     }
   } catch (e) { /* 列表数据已够用，不报错 */ }
 }
 
-// 推导回测关联的品种：优先 trade_detail 里的品种，其次策略配置的 symbols
 const guessSymbol = (row) => {
   const fromTrades = row.trade_detail?.find(t => t.symbol)?.symbol
   if (fromTrades) return fromTrades
@@ -429,7 +483,6 @@ const runMonteCarlo = async () => {
   try {
     const res = await runBacktestMonteCarlo(btId, { n_simulations: 1000 })
     if (res.submitted) {
-      // 异步任务已提交，提示用户稍后重新打开查看
       ElMessage.info('蒙特卡洛模拟已提交后台执行，请稍候重新打开详情查看结果')
     } else if (res.from_cache) {
       mcResult.value = res
@@ -461,16 +514,59 @@ const exportReport = async (row) => {
 }
 
 onMounted(load)
+// 多 tab 缓存后重新激活时刷新数据
+onActivated(() => {
+  if (allData.value.length === 0) load()
+})
 </script>
 
 <style scoped>
 .page-header { display: flex; justify-content: space-between; align-items: center; }
-.title-wrap { display: flex; align-items: center; gap: 8px; }
-.tip-icon { color: #909399; font-size: 18px; cursor: help; }
+.header-left { display: flex; align-items: baseline; gap: 12px; }
+.subtitle { color: #909399; font-size: 13px; }
+.stats-row { margin-top: 16px; }
+.stat-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 8px;
+  background: var(--app-header-bg);
+  border: 1px solid var(--app-header-border);
+  transition: transform .2s, box-shadow .2s;
+}
+.stat-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,.08); }
+.stat-icon {
+  width: 44px; height: 44px;
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px;
+}
+.stat-icon.blue { background: #ecf5ff; color: #409eff; }
+.stat-icon.green { background: #f0f9eb; color: #67c23a; }
+.stat-icon.orange { background: #fdf6ec; color: #e6a23c; }
+.stat-icon.purple { background: #f5f0ff; color: #909399; }
+.stat-value { font-size: 22px; font-weight: 700; }
+.stat-label { color: #909399; font-size: 12px; margin-top: 2px; }
+.filter-bar { margin-top: 16px; }
+.filter-bar :deep(.el-card__body) { padding: 16px 16px 0; }
+.strategy-cell { display: flex; flex-direction: column; gap: 2px; }
+.s-name { font-weight: 600; }
+.s-date { color: #909399; font-size: 12px; }
+.return-cell { display: flex; flex-direction: column; gap: 2px; }
+.return-value { font-weight: 600; }
+.capital-sub { color: #909399; font-size: 12px; }
 .tip-inline { color: #909399; font-size: 13px; margin-left: 4px; vertical-align: middle; cursor: help; }
+.pagination-wrap { display: flex; justify-content: flex-end; margin-top: 16px; }
 .detail-header { display: flex; justify-content: space-between; align-items: center; width: 100%; }
 .detail-actions { display: flex; gap: 8px; }
-.metric-label { font-size: 13px; color: #909399; margin-bottom: 8px; display: flex; align-items: center; }
-.metric-value { font-size: 22px; font-weight: bold; }
-.pagination-wrap { display: flex; justify-content: flex-end; margin-top: 16px; }
+.metric-card {
+  border: 1px solid var(--app-header-border);
+  border-top: 3px solid transparent;
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--app-header-bg);
+}
+.metric-label { font-size: 12px; color: #909399; margin-bottom: 8px; display: flex; align-items: center; }
+.metric-value { font-size: 20px; font-weight: bold; }
 </style>

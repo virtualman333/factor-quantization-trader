@@ -185,6 +185,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'OrderCreate' })
 import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { createOrder, batchCreateOrders, placeAlgoOrder, placeTwapOrder, placeIcebergOrder, getOrderTemplates, createOrderTemplate, deleteOrderTemplate, placeOrderByTemplate } from '@/api/orders'

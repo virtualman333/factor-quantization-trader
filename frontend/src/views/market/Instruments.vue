@@ -34,6 +34,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'Instruments' })
 import { ref, onMounted } from 'vue'
 import { getInstruments, syncInstruments as syncApi } from '@/api/market'
 import { ElMessage } from 'element-plus'

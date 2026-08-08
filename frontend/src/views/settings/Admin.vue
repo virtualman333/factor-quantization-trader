@@ -172,6 +172,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'Admin' })
 import { ref, reactive, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'

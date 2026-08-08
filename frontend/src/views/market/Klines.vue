@@ -168,6 +168,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'Klines' })
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { scrollKlines, fetchKlines as fetchApi } from '@/api/market'

@@ -74,6 +74,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'Tickers' })
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { getTickers, refreshTicker } from '@/api/market'
 import InstrumentSelect from '@/components/InstrumentSelect.vue'

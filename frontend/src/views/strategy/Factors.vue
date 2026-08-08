@@ -71,6 +71,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'Factors' })
 import { ref, onMounted } from 'vue'
 import { getFactors, calculateFactor, createFactor, updateFactor } from '@/api/strategy'
 import InstrumentSelect from '@/components/InstrumentSelect.vue'

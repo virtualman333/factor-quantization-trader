@@ -239,6 +239,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'OrderList' })
 import { ref, onMounted, watch, defineAsyncComponent } from 'vue'
 import { useOrderStore } from '@/stores/orders'
 import { useConfirm } from '@/composables/useConfirm'

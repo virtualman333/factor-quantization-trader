@@ -34,6 +34,7 @@ class StrategyConfigSerializer(serializers.ModelSerializer):
     td_mode_display = serializers.CharField(source='get_td_mode_display', read_only=True)
     username = serializers.CharField(source='user.username', read_only=True)
     signals_count = serializers.SerializerMethodField()
+    latest_backtest = serializers.SerializerMethodField()
 
     class Meta:
         model = StrategyConfig
@@ -42,6 +43,20 @@ class StrategyConfigSerializer(serializers.ModelSerializer):
 
     def get_signals_count(self, obj):
         return obj.signals.count()
+
+    def get_latest_backtest(self, obj):
+        bt = obj.backtests.order_by('-created_at').first()
+        if not bt:
+            return None
+        return {
+            'id': bt.id,
+            'total_return': bt.total_return,
+            'sharpe_ratio': bt.sharpe_ratio,
+            'max_drawdown': bt.max_drawdown,
+            'win_rate': bt.win_rate,
+            'total_trades': bt.total_trades,
+            'created_at': bt.created_at.isoformat() if bt.created_at else None,
+        }
 
 
 class BacktestResultSerializer(serializers.ModelSerializer):

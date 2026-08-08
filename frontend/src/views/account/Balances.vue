@@ -175,6 +175,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'Balances' })
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { Camera, Refresh, DataLine } from '@element-plus/icons-vue'
 import { getBalances, saveBalanceSnapshot, getLiveBalance } from '@/api/account'

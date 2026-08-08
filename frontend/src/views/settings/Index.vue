@@ -116,6 +116,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'Settings' })
 import { ref, reactive, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Check, Connection } from '@element-plus/icons-vue'

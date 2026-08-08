@@ -164,6 +164,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'Positions' })
 import { ref, computed, onMounted } from 'vue'
 import { Camera, Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'

@@ -63,6 +63,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'AccountAnalysis' })
 import { ref, computed, onMounted } from 'vue'
 import { getPnlReport, getFeeStatistics, getEquityBenchmark } from '@/api/account'
 import VChart from 'vue-echarts'

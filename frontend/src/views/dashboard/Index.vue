@@ -141,6 +141,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'Dashboard' })
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { getSignals } from '@/api/strategy'
 import { getOrders } from '@/api/orders'

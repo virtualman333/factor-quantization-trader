@@ -262,6 +262,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'Signals' })
 import { ref, computed, onMounted, watch } from 'vue'
 import { getSignals, executeSignal } from '@/api/strategy'
 import { ElMessage, ElMessageBox } from 'element-plus'

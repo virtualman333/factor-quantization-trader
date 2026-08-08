@@ -21,6 +21,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'NetValue' })
 import { ref, computed, onMounted } from 'vue'
 import { getNetValues, recordNetValue, getNetValueChart } from '@/api/account'
 import { ElMessage } from 'element-plus'
