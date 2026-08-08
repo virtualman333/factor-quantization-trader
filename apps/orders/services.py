@@ -457,15 +457,32 @@ class OrderService:
     def place_market_close(inst_id: str, sz: str, side: str = '',
                            td_mode: str = 'cash', source: str = 'strategy',
                            user=None) -> Dict:
-        """市价平仓"""
-        if not side:
-            from apps.account.services import AccountService
-            positions = AccountService.get_positions_from_api(user=user)
-            pos = positions.get(inst_id)
-            if pos:
-                side = 'sell' if pos.pos > 0 else 'buy'
-            else:
-                raise OrderRejectedError(f'无 {inst_id} 持仓')
+        """市价平仓
+
+        合约平仓前必须校验实际持仓：reduce-only 单不能与持仓同方向，
+        无持仓时发 reduce-only 单会被 OKX 拒绝（code 51170）。
+        现货平仓走 create_order（内部现货风控已处理，不传 reduce_only）。
+        """
+        from apps.account.services import AccountService
+        is_spot = (td_mode or '').lower() == 'cash'
+        if is_spot:
+            return OrderService.create_order(
+                inst_id=inst_id, side=side or 'sell', ord_type='market',
+                sz=sz, td_mode=td_mode, source=source, user=user,
+            )
+
+        # 合约：查实际持仓，按其方向平仓
+        positions = AccountService.get_positions_from_api(inst_type='SWAP', user=user)
+        pos = positions.get(inst_id)
+        if not pos or pos.pos == 0:
+            raise OrderRejectedError(f'无 {inst_id} 持仓，无需平仓')
+
+        # 根据实际持仓方向决定平仓方向：多头持仓->sell，空头持仓->buy
+        # 忽略前端传入的 side，避免方向不一致导致 reduce-only 被拒
+        side = 'sell' if pos.pos > 0 else 'buy'
+        # 全平：sz 用持仓数量（避免数量超过持仓）
+        if not sz or float(sz) >= abs(pos.pos):
+            sz = str(abs(pos.pos))
 
         return OrderService.create_order(
             inst_id=inst_id,
