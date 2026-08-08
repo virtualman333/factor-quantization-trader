@@ -70,13 +70,25 @@ class AccountService:
             positions[inst_id] = PositionInfo(
                 inst_id=inst_id,
                 pos=pos_qty,
-                avg_px=float(item.get('avgPx', 0)),
-                mark_px=float(item.get('markPx', 0)),
-                upl=float(item.get('upl', 0)),
-                margin=float(item.get('margin', 0)),
-                leverage=float(item.get('lever', 1)),
+                avg_px=AccountService._to_float(item.get('avgPx')),
+                mark_px=AccountService._to_float(item.get('markPx')),
+                upl=AccountService._to_float(item.get('upl')),
+                margin=AccountService._to_float(item.get('margin')),
+                leverage=AccountService._to_float(item.get('lever'), 1),
+                pos_side=item.get('posSide', 'net'),
+                liq_px=AccountService._to_float(item.get('liqPx')),
             )
         return positions
+
+    @staticmethod
+    def _to_float(value, default=0.0) -> float:
+        """安全转换 OKX 数值字段（空字符串/None/非法值返回默认值）"""
+        if value is None or value == '':
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
 
     @staticmethod
     def snapshot_balance(user=None) -> List[BalanceSnapshot]:

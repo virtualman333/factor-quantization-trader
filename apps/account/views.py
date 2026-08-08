@@ -227,17 +227,25 @@ class PositionSnapshotViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['get'])
     def live(self, request):
-        """获取实时持仓"""
+        """获取实时持仓（数组格式，字段与前端对齐）"""
         try:
             inst_type = request.query_params.get('inst_type', '')
             positions = AccountService.get_positions_from_api(inst_type, user=request.user)
             return Response({
-                inst_id: {
-                    'pos': p.pos, 'avg_px': p.avg_px,
-                    'mark_px': p.mark_px, 'upl': p.upl,
-                    'margin': p.margin, 'leverage': p.leverage,
-                }
-                for inst_id, p in positions.items()
+                'results': [
+                    {
+                        'inst_id': p.inst_id,
+                        'pos_side': p.pos_side,
+                        'pos': p.pos,
+                        'avg_px': p.avg_px,
+                        'mark_px': p.mark_px,
+                        'upl': p.upl,
+                        'margin': p.margin,
+                        'leverage': p.leverage,
+                        'liq_px': p.liq_px,
+                    }
+                    for p in positions.values()
+                ],
             })
         except Exception as e:
             return Response({'error': str(e)}, status=500)

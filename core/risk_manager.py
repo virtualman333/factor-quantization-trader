@@ -46,6 +46,8 @@ class PositionInfo:
     upl: float = 0.0         # 未实现盈亏
     margin: float = 0.0      # 保证金
     leverage: float = 1.0    # 杠杆
+    pos_side: str = 'net'    # 持仓方向 long/short/net
+    liq_px: float = 0.0      # 强平价格
 
 
 class RiskManager:

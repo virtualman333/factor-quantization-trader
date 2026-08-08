@@ -375,16 +375,23 @@ const loadLive = async () => {
     const params = {}
     if (instType.value) params.inst_type = instType.value
     const res = await getLivePositions(params)
-    const positions = res?.data || []
-    const list = positions.map(p => ({
-      inst_id: p.instId, pos_side: p.posSide, pos: p.pos,
-      avg_px: p.avgPx, mark_px: p.markPx, upl: p.upl,
-      margin: p.margin, leverage: p.lever, liq_px: p.liqPx,
+    // 后端返回 { results: [...] }
+    const positions = res?.results || res?.data || []
+    const list = (Array.isArray(positions) ? positions : []).map(p => ({
+      inst_id: p.inst_id || p.instId,
+      pos_side: p.pos_side || p.posSide || 'net',
+      pos: p.pos,
+      avg_px: p.avg_px ?? p.avgPx,
+      mark_px: p.mark_px ?? p.markPx,
+      upl: p.upl,
+      margin: p.margin,
+      leverage: p.leverage ?? p.lever,
+      liq_px: p.liq_px ?? p.liqPx,
       snapshot_time: nowBeijing(),
     }))
     tableData.value = enrichUplRatio(list)
     total.value = tableData.value.length
-    ElMessage.success('获取成功')
+    ElMessage.success(`获取 ${tableData.value.length} 条实时持仓`)
   } catch (e) { ElMessage.error(e.message) }
   loading.value = false
 }
