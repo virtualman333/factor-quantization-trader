@@ -196,6 +196,32 @@ export const terms = {
   },
 
   // ===== 账户相关 =====
+  balance_vs_live: {
+    title: '快照余额 vs 实时余额',
+    short: '快照 = 本地存档；实时 = 当前交易所最新',
+    detail: '快照余额是你上次点击「保存快照」时存档在 BalanceSnapshot 表的数据，用于回溯历史和绘制净值曲线，不会自动更新。实时余额直接从 OKX API 拉取，反映当前币种的现金余额、可用、冻结等最新状态。两者差额过大通常代表有出入金、挂单、持仓盈亏未同步等情况。',
+    tip: '建议每次入金/出金后、以及每天收盘前各保存一次快照，方便后续净值追踪。',
+  },
+  sum_snap: {
+    title: '快照总资产（USD 估值）',
+    short: '最近一次本地快照中各币种 USD 价值之和',
+    detail: '快照总资产 = 快照表中全部币种的 usd_value 字段相加。快照可能已是几小时或几天前的旧数据，仅用于对比而非下单参考。',
+  },
+  sum_live: {
+    title: '实时总资产（USD 估值）',
+    short: 'OKX API 最新返回的各币种 USD 价值之和',
+    detail: '实时总资产 = 当前 OKX 返回所有有余额币种的 usdValue 相加。可作为下单前余额核对的依据。注意这里只计入账户余额（cashBal × discount），不含持仓未实现盈亏。',
+  },
+  snapshot_cols: {
+    title: '快照字段',
+    short: 'total_eq 总余额 / avail_eq 可用 / frozen_bal 冻结',
+    detail: '快照中的三项数值含义：\n• total_eq (总余额)：该币种的全部余额，包括冻结\n• avail_eq (可用)：可用于下单或提现的余额\n• frozen_bal (冻结)：已被挂单占用或在途的资金。撤单成功后冻结余额会解冻回可用。',
+  },
+  live_cols: {
+    title: '实时字段',
+    short: 'cashBal 现金余额 / availBal 可用 / frozenBal 冻结',
+    detail: 'OKX REST 字段名与快照表略有不同：\n• cashBal 现金余额（对应快照 total_eq）\n• availBal 可用余额\n• frozenBal 冻结余额\n• usdValue 交易所给的 USD 估值\n• discount 折损比率（抵押借币币种折扣后只折算 90% 之类）',
+  },
   net_value: {
     title: '净值',
     short: '账户总资产（现金+持仓市值）',

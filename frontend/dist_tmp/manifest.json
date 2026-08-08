@@ -1,0 +1,21 @@
+{
+  "name": "因子量化交易系统",
+  "short_name": "量化交易",
+  "description": "面向 OKX 交易所的多因子量化交易平台",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#1d1e2c",
+  "theme_color": "#409eff",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/vite.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "categories": ["finance", "productivity"]
+}

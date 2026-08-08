@@ -38,6 +38,30 @@ INSTALLED_APPS = [
     'apps.notifications.NotificationsConfig',
 ]
 
+# ---- 可选：drf-spectacular (OpenAPI 3.0 + Swagger UI) ----
+# pip install drf-spectacular 后自动启用。未安装时保持兼容。
+try:
+    import drf_spectacular  # noqa: F401
+    INSTALLED_APPS += ['drf_spectacular']
+except ImportError:
+    drf_spectacular = None
+
+if drf_spectacular is not None:
+    SPECTACULAR_SETTINGS = {
+        'TITLE': 'Factor Quant Trader API',
+        'DESCRIPTION': '因子量化交易系统 — 后端 API 文档与在线调试界面。\n'
+                       '默认需要登录（JWT Bearer Token 或 Session）。'
+                       '在生产环境（DEBUG=False）下请关闭 AllowAny。',
+        'VERSION': '1.0.0',
+        'SERVE_INCLUDE_SCHEMA': True,
+        'SCHEMA_PATH_PREFIX': '/api/',
+        'COMPONENT_SPLIT_REQUEST': True,
+        'ENUM_NAME_OVERRIDES': {
+            'StrategyTypeEnum': 'apps.strategy.models.StrategyConfig.STRATEGY_TYPE_CHOICES',
+            'OrderStateEnum': 'apps.orders.models.TradeOrder.STATE_CHOICES',
+        },
+    }
+
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'core.middleware.RequestLogMiddleware',
@@ -165,6 +189,9 @@ REST_FRAMEWORK = {
     },
     'EXCEPTION_HANDLER': 'core.exception_handler.custom_exception_handler',
 }
+
+if drf_spectacular is not None:
+    REST_FRAMEWORK['DEFAULT_SCHEMA_CLASS'] = 'drf_spectacular.openapi.AutoSchema'
 
 # CORS
 CORS_ALLOW_ALL_ORIGINS = DEBUG
