@@ -174,10 +174,13 @@ class OrderService:
                                  detail={'cl_ord_id': cl_ord_id, 'leverage': leverage})
 
         # 提交到 OKX
+        # 现货订单不传 clOrdId：OKX 现货对 clOrdId 校验严格（卖单常报 51000），
+        # 由 OKX 自动生成，本地仍保留 cl_ord_id 作为内部标识。
+        submit_cl_oid = '' if is_spot else cl_ord_id
         result = client.place_order(
             inst_id=inst_id, td_mode=td_mode, side=side,
             ord_type=ord_type, sz=submit_sz, px=px,
-            pos_side=pos_side, tgt_ccy=tgt_ccy, client_oid=cl_ord_id,
+            pos_side=pos_side, tgt_ccy=tgt_ccy, client_oid=submit_cl_oid,
         )
 
 

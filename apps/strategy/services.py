@@ -277,10 +277,13 @@ class StrategyService:
                     logger.warning(f'现货市价买单换算金额失败: {e}')
             pos_side = ''  # 现货不传 posSide
 
+        # 现货订单不传 client_oid：OKX 现货对 clOrdId 校验严格（卖单常报 51000）
+        submit_cl_oid = '' if is_spot else f'qt_{signal.id}'
         try:
             result = client.place_order(
                 inst_id=signal.inst_id, td_mode=td_mode, side=side,
-                pos_side=pos_side, ord_type='market', sz=sz, tgt_ccy=tgt_ccy,
+                pos_side=pos_side, ord_type='market', sz=sz,
+                tgt_ccy=tgt_ccy, client_oid=submit_cl_oid,
             )
             if result['code'] == '0':
                 signal.is_executed = True
