@@ -19,3 +19,6 @@ export function createOrderTemplate(data) { return api.post('/orders/templates/'
 export function updateOrderTemplate(id, data) { return api.put(`/orders/templates/${id}/`, data) }
 export function deleteOrderTemplate(id) { return api.delete(`/orders/templates/${id}/`) }
 export function placeOrderByTemplate(id, data) { return api.post(`/orders/templates/${id}/place/`, data) }
+
+export function listAlgoOrders(params) { return api.get('/orders/trades/algos/', { params }) }
+export function cancelAlgoOrder(data) { return api.post('/orders/trades/cancel_algo/', data) }

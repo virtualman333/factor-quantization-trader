@@ -305,6 +305,48 @@ class OKXClient:
             params['autoCxl'] = 'true'
         return self._safe_call(self.trade.close_positions, **params)
 
+    def get_algos_pending(self, algo_type: str = 'conditional',
+                          inst_type: str = '', inst_id: str = '',
+                          after: str = '', before: str = '', limit: int = 100) -> Dict:
+        """查询未触发/进行中的条件单/止盈止损/TWAP/冰山
+        algoType: 1 条件单 / 2 OCO / 3 止盈止损 / 5 冰山 / 6 TWAP / 7 移动止盈 / 14 保证止损
+        也可传字符串：conditional/oco/oco_single/twap/iceberg/limit
+        """
+        from okx.consts import GET, ORDERS_ALGO_PENDING
+        params = {'algoType': str(algo_type), 'limit': str(min(limit, 100))}
+        if inst_type:
+            params['instType'] = inst_type
+        if inst_id:
+            params['instId'] = inst_id
+        if after:
+            params['after'] = after
+        if before:
+            params['before'] = before
+        return self._safe_call(self.trade._request_with_params, GET, ORDERS_ALGO_PENDING, params)
+
+    def get_algos_history(self, algo_type: str = 'conditional',
+                          state: str = '', inst_type: str = '', inst_id: str = '',
+                          limit: int = 100) -> Dict:
+        """查询已完成/已取消的条件单历史
+        state: 9 已完成/10 已撤回/11:已触发/12:已拒绝/13:部分触发
+        """
+        from okx.consts import GET, ORDERS_ALGO_HISTORY
+        params = {'algoType': str(algo_type), 'limit': str(min(limit, 100))}
+        if state:
+            params['state'] = state
+        if inst_type:
+            params['instType'] = inst_type
+        if inst_id:
+            params['instId'] = inst_id
+        return self._safe_call(self.trade._request_with_params, GET, ORDERS_ALGO_HISTORY, params)
+
+    def cancel_algos(self, algo_orders: List[Dict]) -> Dict:
+        """批量取消条件单
+        algo_orders: [{instId, algoId, ...}] 单次最多 10 个
+        """
+        from okx.consts import POST, CANCEL_ALGOS
+        return self._safe_call(self.trade._request_with_params, POST, CANCEL_ALGOS, algo_orders)
+
     # ==================== 账户接口 ====================
     def get_account_balance(self) -> Dict:
         """获取账户余额"""

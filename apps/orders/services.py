@@ -363,3 +363,152 @@ class OrderService:
             source=source,
             user=user,
         )
+
+    @staticmethod
+    def list_algo_orders(algo_type: str = 'conditional',
+                         inst_type: str = '', inst_id: str = '',
+                         include_history: bool = False,
+                         user=None) -> dict:
+        """条件单/算法单列表查询。
+        algo_type: conditional / oco / tp_sl / twap / iceberg
+        - conditional/oco/tp_sl: 直接从 OKX 查 algos_pending (algoType=1,2,3)
+        - twap/iceberg: 从本地 TradeOrder 表查 (source=twap/iceberg) 并按批次聚合
+        """
+        from core.okx_client import get_okx_client
+        from apps.orders.models import TradeOrder
+        from django.db.models import Q, Count, Sum
+
+        algo_type = (algo_type or 'conditional').lower()
+        okx_mapping = {
+            'conditional': '1',
+            'oco': '2',
+            'tp_sl': '3',
+            '1': '1', '2': '2', '3': '3',
+        }
+
+        if algo_type in okx_mapping:
+            # 走 OKX 条件单原生接口
+            client = get_okx_client(user=user)
+            client.require_credentials('查询条件单')
+            pending = client.get_algos_pending(
+                algo_type=okx_mapping[algo_type],
+                inst_type=inst_type or 'SWAP',
+                inst_id=inst_id,
+                limit=100,
+            ) or {}
+            items = pending.get('data', []) if isinstance(pending, dict) else []
+            history = []
+            if include_history:
+                hist = client.get_algos_history(
+                    algo_type=okx_mapping[algo_type],
+                    inst_type=inst_type or 'SWAP',
+                    inst_id=inst_id,
+                    limit=100,
+                ) or {}
+                history = hist.get('data', []) if isinstance(hist, dict) else []
+            return {
+                'type': algo_type,
+                'backend': 'okx',
+                'results': items,
+                'count': len(items),
+                'history': history,
+                'history_count': len(history),
+            }
+
+        if algo_type in ('twap', 'iceberg'):
+            qs = TradeOrder.objects.filter(user=user, source=algo_type).order_by('-created_at')
+            if inst_id:
+                qs = qs.filter(inst_id=inst_id)
+            state_live = ['live', 'partially_filled']
+            if not include_history:
+                qs = qs.filter(state__in=state_live)
+            qs = qs[:200]
+            items = list(qs.values(
+                'id', 'inst_id', 'side', 'ord_type', 'sz', 'px', 'fill_sz',
+                'state', 'strategy_id', 'created_at', 'updated_at'
+            ))
+            # 按 created_at 近似聚合批次（同一分钟内创建的同方向同品种视为一批）
+            batches = {}
+            for it in items:
+                key = (it['inst_id'], it['side'], it['created_at'].strftime('%Y%m%d%H%M'))
+                b = batches.setdefault(key, {
+                    'batch_id': f"{it['inst_id']}_{it['side']}_{key[2]}",
+                    'inst_id': it['inst_id'],
+                    'side': it['side'],
+                    'created_at': it['created_at'],
+                    'total_slices': 0,
+                    'filled_slices': 0,
+                    'pending_slices': 0,
+                    'total_sz': 0,
+                    'fill_sz': 0,
+                    'progress': 0.0,
+                    'details': [],
+                })
+                b['total_slices'] += 1
+                sz = float(it['sz'] or 0)
+                fill_sz = float(it['fill_sz'] or 0)
+                b['total_sz'] += sz
+                b['fill_sz'] += fill_sz
+                if it['state'] in ('filled',):
+                    b['filled_slices'] += 1
+                elif it['state'] in ('live', 'partially_filled'):
+                    b['pending_slices'] += 1
+                b['details'].append(it)
+            for b in batches.values():
+                if b['total_slices']:
+                    b['progress'] = round(b['filled_slices'] / b['total_slices'], 4)
+                b['total_sz'] = f"{b['total_sz']:.6g}"
+                b['fill_sz'] = f"{b['fill_sz']:.6g}"
+            return {
+                'type': algo_type,
+                'backend': 'local',
+                'results': list(batches.values()),
+                'count': len(batches),
+                'details': items,
+                'details_count': len(items),
+            }
+
+        return {'type': algo_type, 'results': [], 'count': 0}
+
+    @staticmethod
+    def cancel_algo(algo_type: str, inst_id: str, algo_id: str = '',
+                    ids: list = None, user=None) -> dict:
+        """取消条件单/算法单
+        - OKX 条件单：需要 [{instId, algoId}] 单次 1-10 个
+        - 本地 TWAP/冰山：批量取消 state in [live, partially_filled] 的订单
+        """
+        from core.okx_client import get_okx_client
+        from apps.orders.models import TradeOrder
+
+        algo_type = (algo_type or 'conditional').lower()
+        if algo_type in ('conditional', 'oco', 'tp_sl', '1', '2', '3'):
+            client = get_okx_client(user=user)
+            client.require_credentials('撤销条件单')
+            batch = ids or [{'instId': inst_id, 'algoId': algo_id}]
+            res = client.cancel_algos(batch) or {}
+            return {'backend': 'okx', 'result': res}
+
+        if algo_type in ('twap', 'iceberg'):
+            qs = TradeOrder.objects.filter(
+                user=user, source=algo_type, state__in=['live', 'partially_filled'],
+            )
+            if inst_id:
+                qs = qs.filter(inst_id=inst_id)
+            # 如果传的是本地订单 ids 列表，只取消这些
+            if ids and len(ids):
+                qs = qs.filter(id__in=ids)
+            canceled = 0
+            errors = []
+            for o in qs:
+                try:
+                    OrderService.cancel_order(ord_id=o.ord_id, inst_id=o.inst_id, user=user)
+                    canceled += 1
+                except Exception as e:
+                    errors.append({'id': o.id, 'error': str(e)})
+            return {
+                'backend': 'local',
+                'canceled': canceled,
+                'errors': errors,
+            }
+
+        return {'error': f'不支持的 algo_type: {algo_type}'}

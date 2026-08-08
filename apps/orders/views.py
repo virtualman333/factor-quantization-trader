@@ -210,6 +210,60 @@ class TradeOrderViewSet(viewsets.ModelViewSet):
             return Response({'error': str(e)}, status=400)
 
 
+    @action(detail=False, methods=['get'])
+    def algos(self, request):
+        """条件单/算法单列表查询
+        Query params:
+          algo_type: conditional / oco / tp_sl / twap / iceberg  (default: conditional)
+          inst_type: SPOT / SWAP / FUTURES  (default: SWAP)
+          inst_id: 可选，只查某品种
+          include_history: true/false (default: false)
+        """
+        from rest_framework.permissions import IsAuthenticated
+        algo_type = request.query_params.get('algo_type', 'conditional')
+        inst_type = request.query_params.get('inst_type', 'SWAP')
+        inst_id = request.query_params.get('inst_id', '')
+        include_history = request.query_params.get('include_history', 'false') == 'true'
+        try:
+            result = OrderService.list_algo_orders(
+                algo_type=algo_type,
+                inst_type=inst_type,
+                inst_id=inst_id,
+                include_history=include_history,
+                user=request.user,
+            )
+            return Response(result)
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
+
+    @action(detail=False, methods=['post'])
+    def cancel_algo(self, request):
+        """取消条件单/算法单
+        Body:
+          algo_type: conditional / oco / tp_sl / twap / iceberg
+          inst_id: 品种 ID
+          algo_id: OKX 条件单 algoId (当 algo_type=conditional/oco/tp_sl 时)
+          ids: [本地订单id,...] 或 [{instId,algoId},...]  (可选，批量)
+        """
+        algo_type = request.data.get('algo_type', 'conditional')
+        inst_id = request.data.get('inst_id', '')
+        algo_id = request.data.get('algo_id', '')
+        ids = request.data.get('ids') or None
+        try:
+            result = OrderService.cancel_algo(
+                algo_type=algo_type,
+                inst_id=inst_id,
+                algo_id=algo_id,
+                ids=ids,
+                user=request.user,
+            )
+            if 'error' in result:
+                return Response(result, status=400)
+            return Response(result)
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
+
+
 class OrderLogViewSet(viewsets.ReadOnlyModelViewSet):
     """订单日志 API"""
     serializer_class = OrderLogSerializer
