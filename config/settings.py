@@ -247,6 +247,12 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.market.tasks.clean_klines_task',
         'schedule': 3 * 60 * 60,
     },
+    # 交易品种定时同步（每天 4 点，SPOT + SWAP）
+    'sync-instruments-every-day': {
+        'task': 'apps.market.tasks.sync_instruments_task',
+        'schedule': 4 * 60 * 60,
+        'args': ['ALL'],
+    },
 }
 
 

@@ -4,28 +4,25 @@ from apps.market.services import MarketDataService
 
 
 @shared_task
-def sync_instruments_task():
-    """定时同步交易品种"""
-    for inst_type in ['SPOT', 'SWAP']:
-        try:
-            MarketDataService.sync_instruments(inst_type=inst_type)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f'Sync instruments {inst_type} failed: {e}')
+def sync_instruments_task(inst_type: str = 'ALL'):
+    """同步交易品种。
 
-
-@shared_task
-def sync_instruments_task(inst_type: str = 'SPOT'):
-    """异步同步交易品种（拉取 OKX 全量品种可能耗时较长）"""
+    兼容两种调用：
+    - Celery Beat / 手动定时任务：不传参或传 'ALL' → 同步 SPOT + SWAP
+    - sync action / 其他场景：指定 'SPOT' 或 'SWAP' → 只同步单类型
+    """
     import logging
     logger = logging.getLogger(__name__)
-    try:
-        count = MarketDataService.sync_instruments(inst_type)
-        logger.info(f'[sync_instruments] {inst_type} 同步完成，共 {count} 个品种')
-        return {'inst_type': inst_type, 'count': count}
-    except Exception as e:
-        logger.error(f'[sync_instruments] {inst_type} 同步失败: {e}')
-        return {'inst_type': inst_type, 'count': 0, 'error': str(e)}
+    types = ['SPOT', 'SWAP'] if inst_type in ('ALL', '') else [inst_type]
+    total = 0
+    for t in types:
+        try:
+            count = MarketDataService.sync_instruments(inst_type=t)
+            total += count
+            logger.info(f'[sync_instruments] {t} 同步完成，共 {count} 个品种')
+        except Exception as e:
+            logger.error(f'[sync_instruments] {t} 同步失败: {e}')
+    return {'inst_type': inst_type, 'count': total}
 
 
 @shared_task

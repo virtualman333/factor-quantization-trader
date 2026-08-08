@@ -8,13 +8,13 @@
 
 | 模块 | 功能 |
 |------|------|
-| **行情数据** | 交易品种管理、K线数据（专业图表+技术指标）、实时行情、资金费率 |
+| **行情数据** | 交易品种管理、K线数据（专业图表+技术指标+快捷周期切换）、实时行情、资金费率 |
 | **账户管理** | 余额快照、持仓管理、净值曲线、OKX 凭证管理（模拟盘/实盘双环境） |
 | **策略引擎** | 因子综合评分、趋势跟踪、放量跟随三种策略，支持回测 |
 | **因子体系** | 动量、波动率、RSI、MACD、布林带、成交量、趋势强度等因子 |
 | **订单管理** | 手动下单、策略自动下单、订单状态追踪、操作日志 |
 | **风控系统** | 仓位限制、每日亏损上限、下单频率控制、止损止盈 |
-| **定时任务** | Celery Beat 每分钟运行活跃策略 + 执行待处理信号 |
+| **定时任务** | Celery Beat 每分钟运行活跃策略 + 执行待处理信号，每日定时同步交易品种（SPOT+SWAP）、清理过期 K 线 |
 
 ---
 
@@ -117,8 +117,6 @@ cd frontend && npm install && npm run dev &     # 前端 (5173)
 
 ### 配置 OKX 凭证
 
-### 配置 OKX 凭证
-
 1. 打开前端 → **系统设置** → 分别配置「模拟盘」和「实盘」的 API Key
 2. 在顶部导航栏下拉菜单中切换交易环境
 3. 点击「测试连接」确认凭证可用
@@ -205,7 +203,8 @@ GET /api/market/klines/scroll/?inst_id=BTC-USDT&bar=1H&after=1690000000000&limit
 
 - `before`：加载更旧的历史数据（左滑）
 - `after`：加载更新的数据（右滑）
-- `auto_fetch=true`：数据库数据不足时自动从 OKX 拉取并回填
+- `auto_fetch=true`：数据库数据不足时自动从 OKX 拉取并回填（同一品种+周期 2 分钟内防重复触发，避免并发重复拉取）
+- URL 参数 `inst_id` / `bar`：K线页面将当前品种与周期同步到 URL，刷新/分享可保留当前视图
 
 ---
 
@@ -262,6 +261,9 @@ python manage.py shell < scripts/init_factors.py   # 初始化因子定义
 
 # 拉取K线
 python manage.py fetch_klines --inst_id BTC-USDT --bar 1H --limit 1000
+
+# 同步交易品种（不传参或 ALL：SPOT+SWAP；也可指定 SPOT/SWAP）
+python manage.py shell -c "from apps.market.tasks import sync_instruments_task; print(sync_instruments_task('ALL'))"
 
 # 运行策略
 python manage.py shell < scripts/run_strategy.py

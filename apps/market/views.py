@@ -172,13 +172,18 @@ class KLineViewSet(viewsets.ReadOnlyModelViewSet):
         fetching = False
 
         # 只在数据库完全无数据时，后台异步触发 OKX 拉取（不阻塞请求）
+        # 防重复触发：2 分钟内同一 (inst_id, bar) 只允许触发一次，避免并发重复拉取
         if auto_fetch and len(klines) == 0:
-            fetching = True
-            from apps.market.tasks import async_fetch_klines_task
-            async_fetch_klines_task.delay(
-                inst_id=inst_id, bar=bar, total=500,
-                before=str(before) if before else ''
-            )
+            from django.core.cache import cache
+            fetch_key = f'kline_fetching:{env}:{inst_id}:{bar}'
+            if not cache.get(fetch_key):
+                cache.set(fetch_key, '1', timeout=120)  # 120 秒冷却
+                fetching = True
+                from apps.market.tasks import async_fetch_klines_task
+                async_fetch_klines_task.delay(
+                    inst_id=inst_id, bar=bar, total=500,
+                    before=str(before) if before else ''
+                )
 
         # has_more 基于数据库实际状态
         has_more = False

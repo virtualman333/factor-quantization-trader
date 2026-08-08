@@ -10,9 +10,19 @@
       </h2>
       <div class="header-right">
         <instrument-select v-model="instId" placeholder="搜索品种" width="180px" />
-        <el-select v-model="bar" style="width:90px;margin-left:8px">
-          <el-option v-for="b in bars" :key="b" :label="b" :value="b" />
-        </el-select>
+        <!-- 快捷K线周期切换 -->
+        <div class="bar-switcher">
+          <el-tooltip v-for="b in quickBars" :key="b" :content="`切换到 ${b} 周期`" placement="bottom">
+            <button
+              class="bar-btn"
+              :class="{ active: bar === b }"
+              @click="switchBar(b)"
+            >{{ b }}</button>
+          </el-tooltip>
+          <el-select v-model="bar" style="width:90px" placeholder="更多">
+            <el-option v-for="b in moreBars" :key="b" :label="b" :value="b" />
+          </el-select>
+        </div>
         <el-button-group style="margin-left:8px">
           <el-button :type="preloadSize === 500 ? 'primary' : ''" size="small" @click="switchPreload(500)">500条</el-button>
           <el-button :type="preloadSize === 1000 ? 'primary' : ''" size="small" @click="switchPreload(1000)">1000条</el-button>
@@ -227,9 +237,14 @@ const chartRef = ref(null)
 const loading = ref(false)
 const fetchLoading = ref(false)
 const instId = ref(route.query.inst_id || 'BTC-USDT')
-const bar = ref('1H')
+// 初始周期优先从 URL 读取（支持 /market/klines?bar=15m 直达）
+const urlBar = route.query.bar || '1H'
+const bar = ref(bars.includes(urlBar) ? urlBar : '1H')
 const preloadSize = ref(1000)
-const bars = ['1m', '3m', '5m', '15m', '30m', '1H', '2H', '4H', '6H', '12H', '1D', '1W', '1M']
+// 快捷周期按钮 + 下拉补充周期
+const quickBars = ['1m', '5m', '15m', '1H', '4H', '1D', '1W']
+const moreBars = ['3m', '30m', '2H', '6H', '12H', '1M']
+const bars = [...quickBars, ...moreBars]
 
 // 主题与指标状态
 const chartTheme = ref(localStorage.getItem('kline_theme') || 'dark')
@@ -609,10 +624,9 @@ const setMiniChartRef = (period, el) => {
 }
 
 const switchBar = (p) => {
+  if (p === bar.value) return
   bar.value = p
-  // 触发 watch 重建图表
-  recreateChart()
-  ElMessage.success(`已切换到 ${p} 周期`)
+  // URL 同步与图表重建由 watch([instId, bar, env]) 统一处理
 }
 
 const loadMiniCharts = async () => {
@@ -838,8 +852,16 @@ watch(instId, (newVal) => {
 })
 
 // ---------- 品种/周期/环境变化时重建 ----------
+let recreateTimer = null
 watch([instId, bar, () => connectionStore.environment], () => {
-  recreateChart()
+  // 品种/周期变化时同步 URL，保留状态便于刷新/分享
+  const query = { ...route.query }
+  if (instId.value) query.inst_id = instId.value
+  if (bar.value) query.bar = bar.value
+  router.replace({ query })
+  // debounce：快速连续切换品种/周期时只重建一次
+  clearTimeout(recreateTimer)
+  recreateTimer = setTimeout(recreateChart, 150)
 })
 
 // 打开面板时加载多周期迷你图
@@ -870,6 +892,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  clearTimeout(recreateTimer)
   teardownRealtime()
   if (resizeObserver) {
     resizeObserver.disconnect()
@@ -914,6 +937,58 @@ onBeforeUnmount(() => {
 .header-right {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 快捷周期切换 */
+.bar-switcher {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding: 3px 6px;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  background: #fff;
+}
+.bar-btn {
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  padding: 3px 7px;
+  border-radius: 4px;
+  color: #606266;
+  cursor: pointer;
+  transition: all .2s;
+  white-space: nowrap;
+}
+.bar-btn:hover {
+  color: #409eff;
+  background: #ecf5ff;
+}
+.bar-btn.active {
+  color: #fff;
+  background: #409eff;
+  font-weight: 600;
+}
+.bar-switcher .el-select {
+  --el-select-border-color-hover: transparent;
+}
+html.dark .bar-switcher {
+  border-color: #4c4d4f;
+  background: #1d1e1f;
+}
+html.dark .bar-btn {
+  color: #c0c4cc;
+}
+html.dark .bar-btn:hover {
+  color: #409eff;
+  background: rgba(64, 158, 255, .15);
+}
+html.dark .bar-btn.active {
+  color: #fff;
+  background: #409eff;
 }
 
 .chart-container {
