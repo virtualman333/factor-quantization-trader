@@ -823,11 +823,27 @@ class StrategyService:
 
         # 持仓状态机：positions[sym] = {'side': 'long'|'short', 'price', 'amount', 'fee'}
         positions = {}
+        # 各品种最新收盘价（用于持仓按当前价格估值）
+        latest_close = {}
+
+        def mark_to_market(cash, pos_map):
+            """总权益 = 现金 + 全部持仓按当前价格计算的价值"""
+            equity = cash
+            for sym, pos in pos_map.items():
+                cur = latest_close.get(sym, pos['price'])
+                if pos['side'] == 'long':
+                    # 多头市值 = 买入金额 × (现价 / 开仓价)
+                    equity += pos['amount'] * (cur / pos['price'])
+                else:
+                    # 空头市值 = 保证金本金 + 浮动盈亏 = amount × (2 - 现价 / 开仓价)
+                    equity += pos['amount'] * (2 - cur / pos['price'])
+            return equity
 
         for timestamp, klines_group in grouped:
             # 每根K线评估一次信号
             for kline in klines_group:
                 sym = kline.instrument.inst_id
+                latest_close[sym] = float(kline.close)
                 sym_df = df_cache.get(sym)
                 if sym_df is None or sym_df.empty:
                     continue
@@ -900,7 +916,8 @@ class StrategyService:
                         cost = entry['amount'] * (price / entry['price'])
                         fee = cost * fee_rate
                         pnl = entry['amount'] - cost - fee - entry['fee']
-                        capital += (entry['amount'] - cost - fee)
+                        # 返还保证金本金 + 浮动盈亏：amount + (amount - cost)
+                        capital += (2 * entry['amount'] - cost - fee)
                     positions.pop(sym, None)
                     trades_log.append({
                         'timestamp': timestamp, 'symbol': sym,
@@ -909,7 +926,33 @@ class StrategyService:
                         'pnl': pnl, 'fee': fee, 'capital': capital,
                     })
 
-            equity_curve.append((timestamp, capital))
+            # 权益曲线按当前价格对持仓估值（含浮盈浮亏）
+            equity_curve.append((timestamp, mark_to_market(capital, positions)))
+
+        # 回测结束：未平仓持仓按最后价格强制结算（买入的要按当前价格计算）
+        for sym, pos in list(positions.items()):
+            sym_df = df_cache.get(sym)
+            last_close = float(sym_df.iloc[-1]['close']) if sym_df is not None and not sym_df.empty else pos['price']
+            # 平多按卖价（扣滑点）、平空按买价（加滑点）
+            price = last_close * (1 - slippage) if pos['side'] == 'long' else last_close * (1 + slippage)
+            if pos['side'] == 'long':
+                proceeds = pos['amount'] * (price / pos['price'])
+                fee = proceeds * fee_rate
+                pnl = proceeds - pos['amount'] - fee - pos['fee']
+                capital += (proceeds - fee)
+            else:
+                cost = pos['amount'] * (price / pos['price'])
+                fee = cost * fee_rate
+                pnl = pos['amount'] - cost - fee - pos['fee']
+                # 返还保证金本金 + 浮动盈亏：amount + (amount - cost)
+                capital += (2 * pos['amount'] - cost - fee)
+            trades_log.append({
+                'timestamp': end_date, 'symbol': sym,
+                'action': 'buy' if pos['side'] == 'short' else 'sell',
+                'price': price, 'pnl': pnl, 'fee': fee, 'capital': capital,
+                'forced': True,  # 回测结束时强制平仓
+            })
+        positions.clear()
 
         # 计算回测指标
         final_capital = capital
@@ -950,7 +993,10 @@ class StrategyService:
             if prev > 0:
                 returns.append((v - prev) / prev)
             prev = v
-        sharpe = (np.mean(returns) / np.std(returns) * np.sqrt(365)) if returns else 0
+        if returns and np.std(returns) > 0:
+            sharpe = np.mean(returns) / np.std(returns) * np.sqrt(365)
+        else:
+            sharpe = 0
 
         result = BacktestResult.objects.create(
             strategy=strategy,
