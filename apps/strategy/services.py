@@ -250,6 +250,7 @@ class StrategyService:
 
         # ===== 现货风控：不能没仓位就卖；只有合约才可以开空 =====
         is_spot = StrategyService._is_spot(strategy, td_mode)
+        tgt_ccy = ''
         if is_spot:
             # 现货做空（无持仓的 sell）一律拒绝
             if signal.signal == 'sell':
@@ -263,12 +264,23 @@ class StrategyService:
                     return None
                 # 卖出数量 = 持仓数量（市价全平），不传 posSide
                 sz = str(round(float(spot_pos.get('pos')), 6))
+            else:
+                # 现货市价买单：sz 需按计价币金额（tgtCcy=quote_ccy）
+                try:
+                    ticker = client.get_ticker(signal.inst_id)
+                    if ticker.get('code') == '0' and ticker.get('data'):
+                        last = float(ticker['data'][0]['last'])
+                        if last > 0:
+                            sz = str(round(float(sz) * last, 6))
+                            tgt_ccy = 'quote_ccy'
+                except Exception as e:
+                    logger.warning(f'现货市价买单换算金额失败: {e}')
             pos_side = ''  # 现货不传 posSide
 
         try:
             result = client.place_order(
                 inst_id=signal.inst_id, td_mode=td_mode, side=side,
-                pos_side=pos_side, ord_type='market', sz=sz,
+                pos_side=pos_side, ord_type='market', sz=sz, tgt_ccy=tgt_ccy,
             )
             if result['code'] == '0':
                 signal.is_executed = True

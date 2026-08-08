@@ -135,10 +135,27 @@ class OrderService:
             except Exception as e:
                 logger.warning(f'设置杠杆失败（可能已设置）: {e}')
 
+        # 现货市价买单：OKX 要求 sz 以计价币(quote)金额为单位（tgtCcy=quote_ccy），
+        # 否则按 base 数量会报 51020 "minimum order amount"。
+        # 这里把用户输入的币数量（如 0.01 BTC）按现价换算成计价币金额。
+        tgt_ccy = ''
+        submit_sz = sz
+        if is_spot and side.lower() == 'buy' and ord_type == 'market':
+            try:
+                ticker = client.get_ticker(inst_id)
+                if ticker.get('code') == '0' and ticker.get('data'):
+                    last = float(ticker['data'][0]['last'])
+                    sz_num = float(sz)
+                    if last > 0 and sz_num > 0:
+                        submit_sz = str(round(sz_num * last, 6))
+                        tgt_ccy = 'quote_ccy'
+            except Exception as e:
+                logger.warning(f'现货市价买单换算金额失败，回退原始数量: {e}')
+
         # 生成客户订单ID
         cl_ord_id = f'qt_{uuid.uuid4().hex[:12]}'
 
-        # 创建本地订单记录
+        # 创建本地订单记录（sz 保存用户原始输入，实际提交用 submit_sz）
         trade_order = TradeOrder.objects.create(
             user=user if user and user.is_authenticated else None,
             cl_ord_id=cl_ord_id,
@@ -159,8 +176,8 @@ class OrderService:
         # 提交到 OKX
         result = client.place_order(
             inst_id=inst_id, td_mode=td_mode, side=side,
-            ord_type=ord_type, sz=sz, px=px,
-            pos_side=pos_side, client_oid=cl_ord_id,
+            ord_type=ord_type, sz=submit_sz, px=px,
+            pos_side=pos_side, tgt_ccy=tgt_ccy, client_oid=cl_ord_id,
         )
 
 

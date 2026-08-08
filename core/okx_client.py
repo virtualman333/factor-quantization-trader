@@ -116,7 +116,15 @@ class OKXClient:
         try:
             result = func(*args, **kwargs)
             if isinstance(result, dict) and result.get('code') != '0':
+                # 优先取 data[0].sMsg 详细错误码信息，比顶层 msg 更具体
+                # （顶层 msg 常为笼统的 "All operations failed"）
                 error_msg = result.get('msg', 'Unknown OKX API error')
+                data = result.get('data') or []
+                if data and isinstance(data, list) and data[0].get('sMsg'):
+                    s_code = data[0].get('sCode', '')
+                    s_msg = data[0].get('sMsg', '')
+                    if s_code and s_code != '0':
+                        error_msg = f'{s_msg} (code {s_code})'
                 logger.error(f'OKX API error: code={result.get("code")}, msg={error_msg}')
                 raise OKXClientError(f'OKX API error [{result.get("code")}]: {error_msg}')
             return result
