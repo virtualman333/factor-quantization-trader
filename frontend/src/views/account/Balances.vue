@@ -125,17 +125,17 @@
               effect="plain"
               style="margin-right:4px"
             >{{ liveDeltaPct(row) }}</el-tag>
-            <b :class="row.live ? '' : 'text-muted'">{{ row.live?.cashBal ?? '--' }}</b>
+            <b :class="row.live ? '' : 'text-muted'">{{ row.live?.total_eq ?? '--' }}</b>
           </template>
         </el-table-column>
         <el-table-column label="可用" width="130" align="right">
           <template #default="{ row }">
-            <span :class="row.live ? '' : 'text-muted'">{{ row.live?.availBal ?? '--' }}</span>
+            <span :class="row.live ? '' : 'text-muted'">{{ row.live?.avail_eq ?? '--' }}</span>
           </template>
         </el-table-column>
         <el-table-column label="冻结" width="110" align="right">
           <template #default="{ row }">
-            <span :class="row.live ? '' : 'text-muted'">{{ row.live?.frozenBal ?? '--' }}</span>
+            <span :class="row.live ? '' : 'text-muted'">{{ row.live?.frozen_bal ?? '--' }}</span>
           </template>
         </el-table-column>
       </el-table-column>
@@ -147,7 +147,7 @@
       </el-table-column>
       <el-table-column prop="usd_value" label="USD价值" width="150" align="right">
         <template #default="{ row }">
-          {{ fmtMoney(row.live?.usdValue ?? row.snap?.usd_value) }}
+          {{ fmtMoney(row.live?.usd_value ?? row.snap?.usd_value) }}
         </template>
       </el-table-column>
       <el-table-column label="折扣率" width="80" align="right">
@@ -198,7 +198,7 @@ let timer = null
 
 // 汇总
 const snapTotalUsd = computed(() => sumUsd(snapshots.value, x => x.usd_value))
-const liveTotalUsd = computed(() => sumUsd(liveDetails.value, x => x.usdValue))
+const liveTotalUsd = computed(() => sumUsd(liveDetails.value, x => x.usd_value))
 const deltaUsd = computed(() =>
   (liveTotalUsd.value === null || snapTotalUsd.value === null)
     ? null
@@ -236,7 +236,7 @@ const mergedRows = computed(() => {
   // 注入差额信息
   rows.forEach(r => {
     const snapEq = parseFloat(r.snap?.total_eq) || 0
-    const liveEq = parseFloat(r.live?.cashBal) || 0
+    const liveEq = parseFloat(r.live?.total_eq) || 0
     const delta = r.live && r.snap ? (liveEq - snapEq) : null
     const hasDelta = r.live && r.snap && Math.abs(delta) > 0
     const pct = (r.snap && r.live && Math.abs(snapEq) > 1e-12)
@@ -247,10 +247,10 @@ const mergedRows = computed(() => {
     r.deltaText = (delta === null) ? '--' : ((delta >= 0 ? '+' : '') + fmtNum(delta, snapEq))
     r._deltaPct = pct
   })
-  // 排序：按 usdValue 降序
+  // 排序：按 usd_value 降序
   rows.sort((a, b) => {
-    const au = parseFloat(a.live?.usdValue ?? a.snap?.usd_value ?? 0)
-    const bu = parseFloat(b.live?.usdValue ?? b.snap?.usd_value ?? 0)
+    const au = parseFloat(a.live?.usd_value ?? a.snap?.usd_value ?? 0)
+    const bu = parseFloat(b.live?.usd_value ?? b.snap?.usd_value ?? 0)
     return bu - au
   })
   return rows
@@ -325,13 +325,14 @@ async function loadLive() {
   liveLoading.value = true
   try {
     const res = await getLiveBalance()
-    const details = res?.data?.[0]?.details || []
-    // 过滤：cashBal=0 且 availBal=0 的币种不展示（OKX 经常返回上百个 0 余额垃圾币）
+    // 后端 get_balance_from_api 返回 { total_eq_usd, details, snapshot_time }
+    const details = res?.details || []
+    // 过滤：total_eq=0 且 avail_eq=0 的币种不展示（OKX 经常返回上百个 0 余额垃圾币）
     liveDetails.value = details.filter(d => {
-      const cash = parseFloat(d.cashBal) || 0
-      const avail = parseFloat(d.availBal) || 0
-      const usd = parseFloat(d.usdValue) || 0
-      return Math.abs(cash) > 0 || Math.abs(avail) > 0 || Math.abs(usd) > 0.01
+      const total = parseFloat(d.total_eq) || 0
+      const avail = parseFloat(d.avail_eq) || 0
+      const usd = parseFloat(d.usd_value) || 0
+      return Math.abs(total) > 0 || Math.abs(avail) > 0 || Math.abs(usd) > 0.01
     })
     liveDataTime.value = nowBeijing()
     ElMessage.success(`已拉取 ${liveDetails.value.length} 个币种实时余额`)

@@ -31,10 +31,11 @@ class AccountService:
         total_eq_usd = Decimal('0')
         details = []
         for item in result.get('data', [])[0].get('details', []):
-            eq = Decimal(str(item.get('cashBal', item.get('eq', '0'))))
-            avail = Decimal(str(item.get('availBal', item.get('availEq', '0'))))
+            eq = Decimal(str(item.get('eq', item.get('cashBal', '0'))))
+            avail = Decimal(str(item.get('availEq', item.get('availBal', '0'))))
             frozen = Decimal(str(item.get('frozenBal', '0')))
-            usd_val = Decimal(str(item.get('usdPnl', item.get('usdEq', '0'))))
+            # 币种美元价值：OKX 字段为 usdEq / eqUsd；usdPnl 是未实现盈亏(通常为0)，不能用作估值
+            usd_val = Decimal(str(item.get('usdEq', item.get('eqUsd', '0'))))
             details.append({
                 'ccy': item['ccy'],
                 'total_eq': eq,
