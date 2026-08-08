@@ -62,17 +62,19 @@ export const useTabsStore = defineStore('tabs', () => {
     const title = meta?.title || '未命名'
     const name = route.name || String(path)
     const noCache = !!meta?.noCache
+    const icon = meta?.icon || ''
     const existing = tabs.value.find((t) => t.path === path)
     if (existing) {
       existing.fullPath = fullPath
       existing.active = true
       existing.title = title
+      existing.icon = icon
       // 切换回时若当前页不可缓存，允许其再次加载
       return
     }
     // 去掉其它标签的高亮
     tabs.value.forEach((t) => { t.active = false })
-    tabs.value.push({ path, fullPath, title, name, noCache, active: true })
+    tabs.value.push({ path, fullPath, title, name, noCache, icon, active: true })
     persist()
   }
 
@@ -92,6 +94,26 @@ export const useTabsStore = defineStore('tabs', () => {
   /** 关闭其它标签，保留指定 path */
   function closeOthers(path) {
     tabs.value = tabs.value.filter((t) => t.path === path)
+    tabs.value.forEach((t) => { t.active = t.path === path })
+    persist()
+  }
+
+  /** 关闭指定标签左侧的所有标签 */
+  function closeLeft(path) {
+    const idx = tabs.value.findIndex((t) => t.path === path)
+    if (idx === -1) return
+    const removed = tabs.value.slice(0, idx)
+    tabs.value = tabs.value.slice(idx)
+    tabs.value.forEach((t) => { t.active = t.path === path })
+    persist()
+    return removed
+  }
+
+  /** 关闭指定标签右侧的所有标签 */
+  function closeRight(path) {
+    const idx = tabs.value.findIndex((t) => t.path === path)
+    if (idx === -1) return
+    tabs.value = tabs.value.slice(0, idx + 1)
     tabs.value.forEach((t) => { t.active = t.path === path })
     persist()
   }
@@ -117,6 +139,6 @@ export const useTabsStore = defineStore('tabs', () => {
 
   return {
     tabs, tabList, cachedViews, activePath, refreshQueue,
-    addTab, removeTab, closeOthers, closeAll, refresh, consumeRefresh,
+    addTab, removeTab, closeOthers, closeLeft, closeRight, closeAll, refresh, consumeRefresh,
   }
 })
