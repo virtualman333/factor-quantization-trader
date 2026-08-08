@@ -278,9 +278,9 @@ class StrategyService:
     def _filter_by_direction(signal: str, direction: str) -> str:
         """根据策略方向过滤信号"""
         if direction == 'long':
-            return signal if signal in ('buy', 'close_short') else 'hold'
+            return signal if signal in ('buy', 'close_long') else 'hold'
         elif direction == 'short':
-            return signal if signal in ('sell', 'close_long') else 'hold'
+            return signal if signal in ('sell', 'close_short') else 'hold'
         elif direction == 'both':
             return signal
         return signal
@@ -821,6 +821,9 @@ class StrategyService:
 
         factor_lookback = 200  # 因子计算窗口
 
+        # 持仓状态机：positions[sym] = {'side': 'long'|'short', 'price', 'amount', 'fee'}
+        positions = {}
+
         for timestamp, klines_group in grouped:
             # 每根K线评估一次信号
             for kline in klines_group:
@@ -837,38 +840,74 @@ class StrategyService:
                 engine = FactorEngine(df)
                 engine.calculate_all(strategy.factors)
                 score, sig = engine.get_composite_score()
-                sig = StrategyService._filter_by_direction(sig, strategy.direction)
 
-                # 成交价含滑点
-                price = float(kline.close) * (1 + slippage) if sig == 'buy' else float(kline.close) * (1 - slippage)
+                cur = positions.get(sym)
+                cur_side = cur['side'] if cur else None
                 trade_pct = float(strategy.order_size_pct)
 
+                # 信号 → 动作：方向仅约束开仓，平仓始终允许
+                action = None
                 if sig == 'buy':
+                    if cur_side == 'short':
+                        action = 'close_short'          # 平空
+                    elif cur_side is None and strategy.direction in ('long', 'both'):
+                        action = 'open_long'            # 开多
+                elif sig == 'sell':
+                    if cur_side == 'long':
+                        action = 'close_long'           # 平多
+                    elif cur_side is None and strategy.direction in ('short', 'both'):
+                        action = 'open_short'           # 开空
+                elif sig == 'close_long' and cur_side == 'long':
+                    action = 'close_long'
+                elif sig == 'close_short' and cur_side == 'short':
+                    action = 'close_short'
+
+                if not action:
+                    continue
+
+                # 成交价含滑点
+                base_price = float(kline.close)
+                if action in ('open_long', 'close_short'):
+                    price = base_price * (1 + slippage)
+                else:
+                    price = base_price * (1 - slippage)
+
+                if action in ('open_long', 'open_short'):
                     amount = capital * trade_pct
                     fee = amount * fee_rate
-                    qty = amount / price
+                    if amount + fee > capital:
+                        continue
                     capital -= (amount + fee)
+                    positions[sym] = {
+                        'side': 'long' if action == 'open_long' else 'short',
+                        'price': price, 'amount': amount, 'fee': fee,
+                    }
                     trades_log.append({
                         'timestamp': timestamp, 'symbol': sym,
-                        'action': 'buy', 'price': price, 'amount': amount,
+                        'action': 'buy' if action == 'open_long' else 'sell',
+                        'price': price, 'amount': amount,
                         'fee': fee, 'capital': capital,
                     })
-
-                elif sig == 'sell':
-                    # 清算持仓
-                    for t in list(trades_log):
-                        if t['symbol'] == sym and t['action'] == 'buy':
-                            proceeds = t['amount'] * (price / t['price'])
-                            fee = proceeds * fee_rate
-                            pnl = proceeds - t['amount'] - fee - (t.get('fee') or 0)
-                            capital += (proceeds - fee)
-                            trades_log.remove(t)
-                            trades_log.append({
-                                'timestamp': timestamp, 'symbol': sym,
-                                'action': 'sell', 'price': price,
-                                'pnl': pnl, 'fee': fee, 'capital': capital,
-                            })
-                            break
+                else:
+                    # 平仓
+                    entry = cur
+                    if action == 'close_long':
+                        proceeds = entry['amount'] * (price / entry['price'])
+                        fee = proceeds * fee_rate
+                        pnl = proceeds - entry['amount'] - fee - entry['fee']
+                        capital += (proceeds - fee)
+                    else:  # close_short
+                        cost = entry['amount'] * (price / entry['price'])
+                        fee = cost * fee_rate
+                        pnl = entry['amount'] - cost - fee - entry['fee']
+                        capital += (entry['amount'] - cost - fee)
+                    positions.pop(sym, None)
+                    trades_log.append({
+                        'timestamp': timestamp, 'symbol': sym,
+                        'action': 'buy' if action == 'close_short' else 'sell',
+                        'price': price,
+                        'pnl': pnl, 'fee': fee, 'capital': capital,
+                    })
 
             equity_curve.append((timestamp, capital))
 
@@ -891,15 +930,14 @@ class StrategyService:
             max_dd = max(max_dd, dd)
 
         # 统计交易结果
-        buy_trades = [t for t in trades_log if t.get('action') == 'buy']
-        sell_trades = [t for t in trades_log if t.get('pnl') is not None]
-        total_trades = len(buy_trades) + len(sell_trades)
-        profit_trades = sum(1 for t in sell_trades if t['pnl'] > 0)
-        loss_trades = sum(1 for t in sell_trades if t['pnl'] <= 0)
+        close_trades = [t for t in trades_log if t.get('pnl') is not None]
+        total_trades = len(close_trades)
+        profit_trades = sum(1 for t in close_trades if t['pnl'] > 0)
+        loss_trades = sum(1 for t in close_trades if t['pnl'] <= 0)
 
-        win_rate = profit_trades / len(sell_trades) if sell_trades else 0
-        profits = [t['pnl'] for t in sell_trades if t['pnl'] > 0]
-        losses = [abs(t['pnl']) for t in sell_trades if t['pnl'] <= 0]
+        win_rate = profit_trades / len(close_trades) if close_trades else 0
+        profits = [t['pnl'] for t in close_trades if t['pnl'] > 0]
+        losses = [abs(t['pnl']) for t in close_trades if t['pnl'] <= 0]
 
         avg_profit = np.mean(profits) if profits else 0
         avg_loss = np.mean(losses) if losses else 0
