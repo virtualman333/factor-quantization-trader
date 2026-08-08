@@ -110,7 +110,12 @@ class StrategyService:
 
     @staticmethod
     def _current_position(strategy: StrategyConfig, symbol: str, user=None) -> Optional[Dict]:
-        """查询 OKX 当前持仓（用于平仓判断），失败返回 None"""
+        """查询当前持仓状态（用于平仓/防重复开仓判断）。
+
+        优先取 OKX 实际持仓；若 OKX 无持仓，但最近已有同向开仓信号
+        （已执行或待执行），仍视为"持有"该方向，避免反复发同向开仓信号。
+        """
+        # 1. OKX 实际持仓
         try:
             client = get_okx_client(user=user)
             pos_resp = client.get_positions(inst_type=strategy.inst_type)
@@ -120,6 +125,18 @@ class StrategyService:
                         return {'side': p.get('posSide'), 'pos': abs(float(p.get('pos', 0)))}
         except Exception as e:
             logger.warning(f'获取持仓失败: {e}')
+
+        # 2. 最近的开仓信号视为"虚拟持仓"（防重复开仓）
+        from apps.strategy.models import SignalRecord
+        from django.utils import timezone
+        from datetime import timedelta
+        recent = SignalRecord.objects.filter(
+            strategy=strategy, inst_id=symbol,
+            created_at__gte=timezone.now() - timedelta(hours=2),
+        ).order_by('-created_at').first()
+        if recent and recent.signal in ('buy', 'sell') and not recent.is_executed:
+            return {'side': 'long' if recent.signal == 'buy' else 'short',
+                    'pos': 0, 'pending': True}
         return None
 
     @staticmethod

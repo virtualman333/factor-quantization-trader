@@ -180,9 +180,11 @@ class GoldenCrossStrategy(BaseStrategy):
         price_below_slow = cur_close < cur_s
 
         # 11. 多头共振评分
+        # 注意：金叉/银叉维度只有"穿越"才得分，排列对齐不给分——
+        # 否则单边行情中 EMA 持续同向排列，无交叉也会达到开仓阈值，导致频繁开仓。
         bull_score = 0.0
-        bull_score += self.W_SILVER * (1.0 if bull_silver_cross else 0.5 if bull_silver_align else 0.0)
-        bull_score += self.W_GOLDEN * (1.0 if bull_golden_cross else 0.5 if bull_golden_align else 0.0)
+        bull_score += self.W_SILVER * (1.0 if bull_silver_cross else 0.0)
+        bull_score += self.W_GOLDEN * (1.0 if bull_golden_cross else 0.0)
         bull_score += self.W_MID * (1.0 if bull_mid_cross else 0.5 if bull_mid_align else 0.0)
         bull_score += self.W_MACD * (1.0 if macd_bull_cross else 0.5 if macd_bull_align else 0.0)
         bull_score += self.W_VOL * (1.0 if vol_ok_full else 0.5 if vol_ok_half else 0.0)
@@ -190,8 +192,8 @@ class GoldenCrossStrategy(BaseStrategy):
 
         # 12. 空头共振评分（镜像）
         bear_score = 0.0
-        bear_score += self.W_SILVER * (1.0 if bear_silver_cross else 0.5 if bear_silver_align else 0.0)
-        bear_score += self.W_GOLDEN * (1.0 if bear_golden_cross else 0.5 if bear_golden_align else 0.0)
+        bear_score += self.W_SILVER * (1.0 if bear_silver_cross else 0.0)
+        bear_score += self.W_GOLDEN * (1.0 if bear_golden_cross else 0.0)
         bear_score += self.W_MID * (1.0 if bear_mid_cross else 0.5 if bear_mid_align else 0.0)
         bear_score += self.W_MACD * (1.0 if macd_bear_cross else 0.5 if macd_bear_align else 0.0)
         bear_score += self.W_VOL * (1.0 if vol_ok_full else 0.5 if vol_ok_half else 0.0)
