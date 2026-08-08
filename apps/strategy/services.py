@@ -278,12 +278,19 @@ class StrategyService:
             pos_side = ''  # 现货不传 posSide
 
         # 现货订单不传 client_oid：OKX 现货对 clOrdId 校验严格（卖单常报 51000）
-        submit_cl_oid = '' if is_spot else f'qt_{signal.id}'
+        submit_cl_oid = '' if is_spot else f'qt{signal.id}'
+        # 合约单向持仓(net_mode)：不传 posSide，平仓信号用 reduceOnly
+        submit_pos_side = ''
+        reduce_only = False
+        if not is_spot:
+            if signal.signal in ('close_long', 'close_short'):
+                reduce_only = True
         try:
             result = client.place_order(
                 inst_id=signal.inst_id, td_mode=td_mode, side=side,
-                pos_side=pos_side, ord_type='market', sz=sz,
-                tgt_ccy=tgt_ccy, client_oid=submit_cl_oid,
+                pos_side=submit_pos_side, ord_type='market', sz=sz,
+                tgt_ccy=tgt_ccy, reduce_only=reduce_only,
+                client_oid=submit_cl_oid,
             )
             if result['code'] == '0':
                 signal.is_executed = True
@@ -437,11 +444,11 @@ class StrategyService:
 
                 if triggered:
                     side = 'sell' if tp.side == 'long' else 'buy'
-                    pos_side = tp.side
                     try:
                         result = client.place_order(
                             inst_id=tp.inst_id, td_mode=strategy.td_mode,
-                            side=side, pos_side=pos_side, ord_type='market', sz=sz,
+                            side=side, ord_type='market', sz=sz,
+                            reduce_only=True,  # 平仓：单向模式不需要 posSide
                         )
                         if result.get('code') == '0':
                             tp.is_open = False

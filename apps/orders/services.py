@@ -62,6 +62,7 @@ class OrderService:
                      pos_side: str = '', leverage: float = 1,
                      source: str = 'manual',
                      strategy_id=None, signal_id=None,
+                     reduce_only: bool = False,
                      user=None) -> Dict:
         """创建并提交订单（支持合约杠杆）"""
         # 类型归一化：把 strategy_id / signal_id 的空字符串 / None 统一为 None，避免 IntegerField 报错
@@ -152,8 +153,20 @@ class OrderService:
             except Exception as e:
                 logger.warning(f'现货市价买单换算金额失败，回退原始数量: {e}')
 
-        # 生成客户订单ID
-        cl_ord_id = f'qt_{uuid.uuid4().hex[:12]}'
+        # 生成客户订单ID（OKX 合约只允许字母数字，不能用下划线）
+        cl_ord_id = f'qt{uuid.uuid4().hex[:12]}'
+
+        # 合约下单：账户为单向持仓(net_mode)时不传 posSide，
+        # 平仓用 reduceOnly 标记。posSide 仅用于双向持仓模式。
+        # 根据传入 pos_side 推导：传入的 pos_side 与 side 相反时视为平仓。
+        submit_pos_side = ''
+        if not is_spot and td_mode in ('cross', 'isolated'):
+            # 显式传入 reduce_only 优先（如 place_market_close 平仓）
+            if not reduce_only and pos_side:
+                # 传入 pos_side：当 pos_side 与 side 相反（平仓）时用 reduceOnly
+                if (side.lower() == 'buy' and pos_side == 'short') or \
+                   (side.lower() == 'sell' and pos_side == 'long'):
+                    reduce_only = True
 
         # 创建本地订单记录（sz 保存用户原始输入，实际提交用 submit_sz）
         trade_order = TradeOrder.objects.create(
@@ -180,7 +193,8 @@ class OrderService:
         result = client.place_order(
             inst_id=inst_id, td_mode=td_mode, side=side,
             ord_type=ord_type, sz=submit_sz, px=px,
-            pos_side=pos_side, tgt_ccy=tgt_ccy, client_oid=submit_cl_oid,
+            pos_side=submit_pos_side, tgt_ccy=tgt_ccy,
+            reduce_only=reduce_only, client_oid=submit_cl_oid,
         )
 
 
@@ -456,6 +470,7 @@ class OrderService:
             sz=sz,
             td_mode=td_mode,
             source=source,
+            reduce_only=True,  # 平仓：单向持仓模式用 reduceOnly
             user=user,
         )
 
