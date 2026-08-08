@@ -4,6 +4,7 @@
 
 from apps.strategy.registry import registry
 import apps.strategy.strategies.factor_composite   # noqa: F401
+import apps.strategy.strategies.golden_cross        # noqa: F401
 import apps.strategy.strategies.trend_follow        # noqa: F401
 import apps.strategy.strategies.volume_breakout     # noqa: F401
 

@@ -168,10 +168,9 @@ class StrategyService:
             if ticker['code'] == '0' and ticker['data']:
                 current_price = float(ticker['data'][0]['last'])
 
-        # 仓位大小：放量跟随用风险公式，其余按比例
+        # 仓位大小：有止损价的开仓信号用风险公式，其余按比例
         impl = StrategyService.get_strategy_impl(strategy)
-        if (strategy.strategy_type == 'volume_breakout'
-                and signal.signal in ('buy', 'sell') and signal.stop_loss_price is not None):
+        if signal.signal in ('buy', 'sell') and signal.stop_loss_price is not None:
             risk_pct = float(impl.param('risk_per_trade', 0.01))
             sl_price = float(signal.stop_loss_price)
             sl_dist = abs(current_price - sl_price)
@@ -229,7 +228,8 @@ class StrategyService:
     @staticmethod
     def _sync_tracked_position_after_exec(signal: SignalRecord, strategy: StrategyConfig, td_mode: str):
         """信号执行成功后，维护持仓跟踪状态"""
-        if strategy.strategy_type != 'volume_breakout':
+        # 无止损价的开仓信号不创建持仓跟踪；平仓信号仍尝试更新已有持仓
+        if signal.signal in ('buy', 'sell') and not signal.stop_loss_price:
             return
         from apps.strategy.models import TrackedPosition
         if signal.signal in ('buy', 'sell'):
@@ -269,7 +269,7 @@ class StrategyService:
         from django.utils import timezone
         from datetime import timedelta
 
-        if strategy.strategy_type != 'volume_breakout':
+        if not TrackedPosition.objects.filter(strategy=strategy, is_open=True).exists():
             return
         client = get_okx_client(user=strategy.user)
         impl = S.get_strategy_impl(strategy)
@@ -386,8 +386,8 @@ class StrategyService:
 
     @staticmethod
     def monitor_all_active_strategies():
-        """监控所有活跃的放量跟随策略持仓"""
-        for strategy in StrategyConfig.objects.filter(status='active', strategy_type='volume_breakout'):
+        """监控所有活跃策略持仓（硬止损 / 固定止盈 / 移动止盈）"""
+        for strategy in StrategyConfig.objects.filter(status='active'):
             try:
                 StrategyService.monitor_positions_for_strategy(strategy)
             except Exception as e:

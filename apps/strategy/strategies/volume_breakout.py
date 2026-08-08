@@ -7,6 +7,7 @@ import logging
 from datetime import timedelta
 
 import pandas as pd
+import ta
 
 from apps.strategy.base import BaseStrategy, ParamSchema, StrategySignal
 from apps.strategy.registry import register
@@ -51,7 +52,14 @@ class VolumeBreakoutStrategy(BaseStrategy):
         ParamSchema('risk_per_trade', '单笔风险比例', 'number', 0.01, 0.001, 0.05, 0.001,
                     help_text='仓位 = 资金×比例 ÷ 止损距离'),
         ParamSchema('daily_max_stop', '单日最大止损', 'int', 3, 0, 10, 1,
-                    help_text='达上限当日停止开仓'),
+                    help_text='该标的当日止损达上限后停止开仓（0=不限制）'),
+        # ---- ADX 趋势强度过滤（可选） ----
+        ParamSchema('adx_filter', 'ADX趋势过滤开关', 'bool', False,
+                    help_text='开启后要求 ADX >= adx_threshold 才开仓'),
+        ParamSchema('adx_period', 'ADX周期', 'int', 14, 5, 60, 1,
+                    help_text='ADX 计算周期'),
+        ParamSchema('adx_threshold', 'ADX趋势阈值', 'number', 20, 10, 50, 1,
+                    help_text='ADX >= 该值认为趋势强劲，可开仓'),
     ]
 
     def generate_signal(self, df, symbol, position=None, context=None):
@@ -104,6 +112,22 @@ class VolumeBreakoutStrategy(BaseStrategy):
         cooling_long_ok = self._cooling_ok(symbol, 'buy', cooling_min, context)
         cooling_short_ok = self._cooling_ok(symbol, 'sell', cooling_min, context)
 
+        # 日止损次数检查（达上限停止开仓，回测跳过）
+        daily_stop_ok = self._daily_stop_ok(symbol, context)
+
+        # ADX 趋势强度过滤（可选开关，默认关闭保持向后兼容）
+        adx_filter = bool(self.param('adx_filter', False))
+        adx_ok = True
+        adx_value = 0.0
+        if adx_filter:
+            adx_period = int(self.param('adx_period', 14))
+            adx_threshold = float(self.param('adx_threshold', 20))
+            adx_series = ta.trend.ADXIndicator(
+                df['high'], df['low'], df['close'], window=adx_period
+            ).adx()
+            adx_value = float(adx_series.iloc[-1]) if not pd.isna(adx_series.iloc[-1]) else 0.0
+            adx_ok = adx_value >= adx_threshold
+
         # 止损/止盈价计算
         stop_loss_price = take_profit_price = None
         if bull_signal or bear_signal:
@@ -126,6 +150,9 @@ class VolumeBreakoutStrategy(BaseStrategy):
             'bear_signal': bear_signal,
             'atr_ok': atr_ok,
             'above_ma': above_ma,
+            'daily_stop_ok': daily_stop_ok,
+            'adx': round(adx_value, 2),
+            'adx_ok': adx_ok,
         }
 
         cur_side = (position or {}).get('side') if position else None
@@ -142,12 +169,12 @@ class VolumeBreakoutStrategy(BaseStrategy):
                                   round(cur_atr, 8) if cur_atr else None, tp_mode)
 
         # 无持仓时开仓
-        if bull_signal and above_ma and atr_ok and cooling_long_ok:
+        if bull_signal and above_ma and atr_ok and cooling_long_ok and daily_stop_ok and adx_ok:
             return StrategySignal('buy', 0.8,
                                   f'放量上涨+顺势(价>MA{trend_ma_len})+ATR过滤',
                                   detail, stop_loss_price, take_profit_price,
                                   round(cur_atr, 8) if cur_atr else None, tp_mode)
-        if bear_signal and below_ma and atr_ok and cooling_short_ok:
+        if bear_signal and below_ma and atr_ok and cooling_short_ok and daily_stop_ok and adx_ok:
             return StrategySignal('sell', 0.8,
                                   f'放量下跌+顺势(价<MA{trend_ma_len})+ATR过滤',
                                   detail, stop_loss_price, take_profit_price,
@@ -160,6 +187,10 @@ class VolumeBreakoutStrategy(BaseStrategy):
             bits.append('ATR过小/震荡屏蔽')
         if not (above_ma or below_ma):
             bits.append('价格缠绕MA')
+        if not daily_stop_ok:
+            bits.append('当日止损达上限')
+        if not adx_ok:
+            bits.append(f'ADX趋势不足({adx_value:.1f})')
         return StrategySignal('hold', 0, ';'.join(bits) or '条件不满足', detail)
 
     # ---------- 工具方法 ----------
@@ -188,3 +219,22 @@ class VolumeBreakoutStrategy(BaseStrategy):
         if last_sig is None:
             return True
         return (timezone.now() - last_sig.created_at) >= timedelta(minutes=cooling_min)
+
+    def _daily_stop_ok(self, symbol, context):
+        """当日止损次数检查：达上限则禁止开仓（回测跳过；0=不限制；跨日重置）"""
+        if not context or not context.get('check_cooling'):
+            return True
+        daily_max = int(self.param('daily_max_stop', 3))
+        if daily_max <= 0:
+            return True
+        from apps.strategy.models import TrackedPosition
+        from django.utils import timezone
+        today = timezone.now().date()
+        tp = TrackedPosition.objects.filter(
+            strategy=self.config, inst_id=symbol
+        ).first()
+        if tp is None:
+            return True
+        if tp.daily_stop_date != today:
+            return True
+        return tp.daily_stop_count < daily_max
