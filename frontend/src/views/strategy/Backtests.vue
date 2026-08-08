@@ -482,16 +482,12 @@ const runMonteCarlo = async () => {
   mcLoading.value = true
   try {
     const res = await runBacktestMonteCarlo(btId, { n_simulations: 1000 })
-    if (res.submitted) {
-      ElMessage.info('蒙特卡洛模拟已提交后台执行，请稍候重新打开详情查看结果')
-    } else if (res.from_cache) {
-      mcResult.value = res
-      activeTab.value = 'montecarlo'
-      ElMessage.success('已加载缓存结果')
+    if (res?.error) {
+      ElMessage.error(res.error)
     } else {
       mcResult.value = res
       activeTab.value = 'montecarlo'
-      ElMessage.success('蒙特卡洛模拟完成')
+      ElMessage.success(res.from_cache ? '已加载缓存结果' : '蒙特卡洛模拟完成')
     }
   } catch (e) { ElMessage.error(e.message || '蒙特卡洛模拟失败') }
   mcLoading.value = false
@@ -500,8 +496,12 @@ const runMonteCarlo = async () => {
 const exportReport = async (row) => {
   if (!row) return
   try {
-    const res = await exportBacktestResultReport(row.id)
-    const url = URL.createObjectURL(res.data)
+    // 注意：axios 响应拦截器已把 res.data 解包，这里 res 直接就是 Blob
+    const blob = await exportBacktestResultReport(row.id)
+    if (!(blob instanceof Blob)) {
+      throw new Error('导出响应格式异常')
+    }
+    const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
     const safeName = (row.strategy_name || 'strategy').replace(/[\\/:*?"<>|]/g, '_')

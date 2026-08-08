@@ -558,7 +558,7 @@ class BacktestResultViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=['post'])
     def monte_carlo(self, request, pk=None):
-        """蒙特卡洛模拟：优先返回缓存，否则异步任务执行并立即返回 task_id"""
+        """蒙特卡洛模拟：优先返回缓存，否则同步执行（1000次模拟开销极小）"""
         bt = self.get_object()
         n_simulations = int(request.data.get('n_simulations', 1000))
         # 优先使用缓存（已完成过且模拟次数一致）
@@ -566,20 +566,15 @@ class BacktestResultViewSet(viewsets.ReadOnlyModelViewSet):
         if cached.get('status') == 'success' and cached.get('n_simulations') == n_simulations:
             return Response({**cached.get('result', {}), 'from_cache': True})
 
-        # 同步小规模（<=300次）直接算；大规模异步
-        if n_simulations <= 300:
-            try:
-                result = StrategyService.run_monte_carlo(bt, n_simulations=n_simulations)
+        # 同步执行并缓存（内存计算，1000次模拟 < 2s）
+        try:
+            result = StrategyService.run_monte_carlo(bt, n_simulations=n_simulations)
+            if 'error' not in result:
                 bt.monte_carlo = {'status': 'success', 'n_simulations': n_simulations, 'result': result}
                 bt.save(update_fields=['monte_carlo'])
-                return Response(result)
-            except Exception as e:
-                return Response({'error': str(e)}, status=500)
-
-        # 异步执行
-        from apps.strategy.tasks import run_monte_carlo_task
-        task = run_monte_carlo_task.delay(backtest_id=bt.id, n_simulations=n_simulations)
-        return Response({'task_id': str(task.id), 'submitted': True, 'backtest_id': bt.id}, status=202)
+            return Response(result)
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
 
     @action(detail=True, methods=['get'])
     def export_report(self, request, pk=None):
