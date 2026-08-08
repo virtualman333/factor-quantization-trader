@@ -15,24 +15,15 @@
     <el-card shadow="never" class="watch-card" style="margin-top:16px">
       <div class="watch-header">
         <span class="watch-title">自选品种统计</span>
-        <el-select
+        <instrument-select
           v-model="watchIds"
           multiple
-          filterable
-          remote
+          allow-create
           collapse-tags
-          collapse-tags-tooltip
-          :remote-method="searchWatch"
-          :loading="watchSearchLoading"
           placeholder="搜索并添加品种（可多选）"
-          style="width:420px"
+          width="420px"
           @change="onWatchChange"
-        >
-          <el-option v-for="o in watchOptions" :key="o.inst_id" :label="o.inst_id" :value="o.inst_id">
-            <span>{{ o.inst_id }}</span>
-            <span class="opt-tag">{{ o.inst_type_display || o.inst_type }}</span>
-          </el-option>
-        </el-select>
+        />
       </div>
 
       <!-- 汇总统计 -->
@@ -84,7 +75,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { getTickers, refreshTicker, getInstruments } from '@/api/market'
+import { getTickers, refreshTicker } from '@/api/market'
 import InstrumentSelect from '@/components/InstrumentSelect.vue'
 import { useRealtimeStore } from '@/stores/realtime'
 import { ElMessage } from 'element-plus'
@@ -100,8 +91,6 @@ const unsubscribers = []
 // ---------- 自选品种统计 ----------
 const WATCH_KEY = 'tickers_watch_list'
 const watchIds = ref(JSON.parse(localStorage.getItem(WATCH_KEY) || '[]'))
-const watchOptions = ref([])
-const watchSearchLoading = ref(false)
 const selectedTickers = ref([])
 const watchSubscribers = []
 
@@ -119,17 +108,6 @@ const avgChange = computed(() => {
   if (!arr.length) return 0
   return parseFloat((arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(2))
 })
-
-const searchWatch = async (query) => {
-  watchSearchLoading.value = true
-  try {
-    const params = { page_size: 20 }
-    if (query) params.keyword = query
-    const res = await getInstruments(params)
-    watchOptions.value = res.results || res || []
-  } catch (e) { ElMessage.error(e.message) }
-  watchSearchLoading.value = false
-}
 
 const onWatchChange = (val) => {
   localStorage.setItem(WATCH_KEY, JSON.stringify(val))
@@ -230,8 +208,6 @@ onMounted(() => {
   load()
   if (watchIds.value.length) {
     loadWatchTickers()
-  } else {
-    searchWatch('')
   }
 })
 onBeforeUnmount(() => {
@@ -248,7 +224,6 @@ onBeforeUnmount(() => {
 .watch-card :deep(.el-card__body) { padding: 14px 16px; }
 .watch-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
 .watch-title { font-size: 15px; font-weight: 600; }
-.opt-tag { float: right; color: #909399; font-size: 12px; }
 
 .watch-summary {
   display: flex; align-items: center; gap: 20px;

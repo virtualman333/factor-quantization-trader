@@ -192,9 +192,15 @@
           </el-select>
         </el-form-item>
         <el-form-item label="交易对">
-          <el-select v-model="form.symbols" multiple filterable remote :remote-method="searchInstruments" :loading="instrumentsLoading" placeholder="选择交易对" style="width:100%">
-            <el-option v-for="item in instrumentOptions" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
+          <instrument-select
+            v-model="form.symbols"
+            multiple
+            allow-create
+            collapse-tags
+            :inst-type="form.inst_type || 'SWAP'"
+            placeholder="搜索选择交易对，可输入自定义"
+            width="100%"
+          />
         </el-form-item>
         <el-form-item label="K线周期">
           <el-select v-model="form.bar">
@@ -405,7 +411,7 @@ import {
   optimizeParams as optimizeParamsApi, optimizeWeights as optimizeWeightsApi,
   getBacktestTasks,
 } from '@/api/strategy'
-import { getInstruments as getMarketInstruments } from '@/api/market'
+import InstrumentSelect from '@/components/InstrumentSelect.vue'
 import { useStrategyStore } from '@/stores/strategy'
 import { useConfirm } from '@/composables/useConfirm'
 import { useFormDraft } from '@/composables/useFormDraft'
@@ -529,8 +535,6 @@ const pageSize = ref(10)
 
 const form = ref({})
 const factorsStr = ref('')
-const instrumentOptions = ref([])
-const instrumentsLoading = ref(false)
 
 const DEFAULT_VOLUME_PARAMS = {
   vol_ma_len: 20,
@@ -550,29 +554,8 @@ const DEFAULT_VOLUME_PARAMS = {
 }
 const mergeVolumeParams = (raw) => ({ ...DEFAULT_VOLUME_PARAMS, ...(raw || {}) })
 
-const loadInstruments = async (instType, keyword = '') => {
-  instrumentsLoading.value = true
-  try {
-    const params = {}
-    if (instType) params.inst_type = instType
-    if (keyword) params.keyword = keyword
-    params.page_size = 50
-    const res = await getMarketInstruments(params)
-    const rows = res.results || res || []
-    instrumentOptions.value = rows
-      .filter(i => i.inst_id)
-      .map(i => ({ label: i.inst_id, value: i.inst_id }))
-  } catch (e) { ElMessage.error(e.message) }
-  instrumentsLoading.value = false
-}
-
-const searchInstruments = (query) => {
-  loadInstruments(form.value.inst_type || 'SWAP', query)
-}
-
-watch(() => form.value.inst_type, (val) => {
+watch(() => form.value.inst_type, () => {
   form.value.symbols = []
-  loadInstruments(val || 'SWAP')
 })
 
 const load = async () => {
@@ -699,7 +682,6 @@ const openDialog = (row) => {
       factorsStr.value = ''
     }
   }
-  loadInstruments(form.value.inst_type || 'SWAP')
   dialogVisible.value = true
 }
 
