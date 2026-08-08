@@ -96,17 +96,17 @@
         </template>
         <el-table-column label="总余额" width="150" align="right">
           <template #default="{ row }">
-            <span :class="!row.snap ? 'text-muted' : ''">{{ row.snap?.total_eq ?? '--' }}</span>
+            <span :class="!row.snap ? 'text-muted' : ''">{{ row.snap?.total_eq != null ? fmtMoney(row.snap.total_eq) : '--' }}</span>
           </template>
         </el-table-column>
         <el-table-column label="可用" width="130" align="right">
           <template #default="{ row }">
-            <span :class="!row.snap ? 'text-muted' : ''">{{ row.snap?.avail_eq ?? '--' }}</span>
+            <span :class="!row.snap ? 'text-muted' : ''">{{ row.snap?.avail_eq != null ? fmtMoney(row.snap.avail_eq) : '--' }}</span>
           </template>
         </el-table-column>
         <el-table-column label="冻结" width="110" align="right">
           <template #default="{ row }">
-            <span :class="!row.snap ? 'text-muted' : ''">{{ row.snap?.frozen_bal ?? '--' }}</span>
+            <span :class="!row.snap ? 'text-muted' : ''">{{ row.snap?.frozen_bal != null ? fmtMoney(row.snap.frozen_bal) : '--' }}</span>
           </template>
         </el-table-column>
       </el-table-column>
@@ -125,17 +125,17 @@
               effect="plain"
               style="margin-right:4px"
             >{{ liveDeltaPct(row) }}</el-tag>
-            <b :class="row.live ? '' : 'text-muted'">{{ row.live?.total_eq ?? '--' }}</b>
+            <b :class="row.live ? '' : 'text-muted'">{{ row.live?.total_eq != null ? fmtMoney(row.live.total_eq) : '--' }}</b>
           </template>
         </el-table-column>
         <el-table-column label="可用" width="130" align="right">
           <template #default="{ row }">
-            <span :class="row.live ? '' : 'text-muted'">{{ row.live?.avail_eq ?? '--' }}</span>
+            <span :class="row.live ? '' : 'text-muted'">{{ row.live?.avail_eq != null ? fmtMoney(row.live.avail_eq) : '--' }}</span>
           </template>
         </el-table-column>
         <el-table-column label="冻结" width="110" align="right">
           <template #default="{ row }">
-            <span :class="row.live ? '' : 'text-muted'">{{ row.live?.frozen_bal ?? '--' }}</span>
+            <span :class="row.live ? '' : 'text-muted'">{{ row.live?.frozen_bal != null ? fmtMoney(row.live.frozen_bal) : '--' }}</span>
           </template>
         </el-table-column>
       </el-table-column>
@@ -286,14 +286,22 @@ function fmtMoney(v) {
   if (v === null || v === undefined || v === '') return '--'
   const n = Number(v)
   if (Number.isNaN(n)) return '--'
-  const abs = Math.abs(n)
-  const digits = abs >= 1 ? 2 : (abs >= 0.01 ? 4 : 8)
-  return n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })
+  return formatNumber(n)
 }
 function fmtNum(delta, ref) {
   const abs = Math.abs(Math.max(Math.abs(delta), Math.abs(ref)))
   const digits = abs >= 1 ? 2 : 6
-  return Number(delta).toFixed(digits)
+  return formatNumber(Number(delta), digits)
+}
+// 统一数值格式化：极小值（<1e-6 且非0）用科学计数法，避免显示为 0
+function formatNumber(n, maxDigits = 8) {
+  if (n === 0) return '0'
+  const abs = Math.abs(n)
+  if (abs < 1e-6) {
+    return n.toExponential(2)
+  }
+  const digits = abs >= 1 ? Math.min(maxDigits, 2) : (abs >= 0.01 ? Math.min(maxDigits, 4) : Math.min(maxDigits, 8))
+  return n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })
 }
 
 // ========= loaders =========
