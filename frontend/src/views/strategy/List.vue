@@ -415,7 +415,7 @@ import { Plus, Search, RefreshLeft, ArrowDown } from '@element-plus/icons-vue'
 import { formatDateTime } from '@/utils/time'
 
 const strategyStore = useStrategyStore()
-const { confirm } = useConfirm()
+const { confirmDelete } = useConfirm()
 const { loadDraft, saveDraft, clearDraft } = useFormDraft('strategy_edit', {})
 const isNew = ref(true)
 const shortcutHelp = inject('shortcutHelp', null)
@@ -615,7 +615,7 @@ const activate = async (id) => { await strategyStore.activate(id); ElMessage.suc
 const pause = async (id) => { await strategyStore.pause(id); ElMessage.success('已暂停'); load() }
 
 const remove = async (row) => {
-  const ok = await confirm.deleteStrategy(row.name)
+  const ok = await confirmDelete(row.name)
   if (!ok) return
   try {
     await strategyStore.remove(row.id)
