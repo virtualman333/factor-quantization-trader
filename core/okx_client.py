@@ -30,11 +30,24 @@ class OKXClient:
         if not all([self.api_key, self.api_secret, self.passphrase]):
             logger.warning('OKX API 凭证未完整配置，仅可使用公共接口')
 
+        # 懒加载模块占位（实际实例在 property 首次访问时创建）
         self._account = None
         self._trade = None
         self._market = None
         self._public = None
         self._funding = None
+
+    def has_credentials(self) -> bool:
+        """判断是否已配置完整凭证（可发起交易请求）"""
+        return bool(self.api_key and self.api_secret and self.passphrase)
+
+    def require_credentials(self, action: str = '交易'):
+        """强制要求凭证完整，否则抛出友好错误"""
+        if not self.has_credentials():
+            raise OKXClientError(
+                f'未配置 OKX API 凭证，无法执行{action}。'
+                '请先在「系统设置-API凭证」中配置当前环境的 API Key/Secret/Passphrase。'
+            )
 
     # -------- 懒加载模块 --------
     @property
@@ -103,7 +116,21 @@ class OKXClient:
         try:
             result = func(*args, **kwargs)
             if isinstance(result, dict) and result.get('code') != '0':
+                # 优先取 data[0].sMsg 详细错误码信息，比顶层 msg 更具体
+                # （顶层 msg 常为笼统的 "All operations failed"）
                 error_msg = result.get('msg', 'Unknown OKX API error')
+                data = result.get('data') or []
+                has_detail = False
+                if data and isinstance(data, list) and data[0].get('sMsg'):
+                    s_code = data[0].get('sCode', '')
+                    s_msg = data[0].get('sMsg', '')
+                    if s_code and s_code != '0':
+                        error_msg = f'{s_msg} (code {s_code})'
+                        has_detail = True
+                if not has_detail and result.get('code') == '1':
+                    # OKX 限流/请求过频时返回笼统 code=1 且无 sMsg，
+                    # 补充友好提示，避免用户误以为代码问题
+                    error_msg = '请求过于频繁或 OKX 服务临时繁忙，请稍后重试'
                 logger.error(f'OKX API error: code={result.get("code")}, msg={error_msg}')
                 raise OKXClientError(f'OKX API error [{result.get("code")}]: {error_msg}')
             return result
@@ -180,13 +207,49 @@ class OKXClient:
         """批量下单"""
         return self._safe_call(self.trade.place_multiple_orders, orders_data=orders)
 
-    def cancel_order(self, inst_id: str, ord_id: str = '', cl_ord_id: str = '') -> Dict:
-        """撤销订单"""
+    def place_algo_order(self, inst_id: str, td_mode: str, side: str,
+                         sz: str, ord_type: str = 'conditional',
+                         trigger_px: str = '', px: str = '',
+                         tp_trigger_px: str = '', tp_order_px: str = '',
+                         sl_trigger_px: str = '', sl_order_px: str = '') -> Dict:
+        """条件单/止盈止损单（OKX Algo 交易）"""
+        params = {
+            'instId': inst_id,
+            'tdMode': td_mode,
+            'side': side,
+            'sz': sz,
+            'ordType': ord_type,
+        }
+        if trigger_px:
+            params['triggerPx'] = trigger_px
+        if px:
+            params['px'] = px
+        if tp_trigger_px:
+            params['tpTriggerPx'] = tp_trigger_px
+            params['tpOrdPx'] = tp_order_px or '-1'
+        if sl_trigger_px:
+            params['slTriggerPx'] = sl_trigger_px
+            params['slOrdPx'] = sl_order_px or '-1'
+        return self._safe_call(self.trade.place_algo_order, **params)
+
+    def cancel_order(self, inst_id: str, ord_id: str = '', cl_ord_id: str = '',
+                     pos_side: str = '') -> Dict:
+        """撤销订单
+
+        注: 双向持仓模式（long_short_mode）下撤单必须携带 posSide，
+        SDK 的 cancel_order 不支持该参数，需走底层请求。
+        """
         params = {'instId': inst_id}
         if ord_id:
             params['ordId'] = ord_id
         if cl_ord_id:
             params['clOrdId'] = cl_ord_id
+        if pos_side:
+            from okx.consts import POST, CANCEL_ORDER
+            params['posSide'] = pos_side
+            return self._safe_call(
+                self.trade._request_with_params, POST, CANCEL_ORDER, params
+            )
         return self._safe_call(self.trade.cancel_order, **params)
 
     def cancel_batch_orders(self, orders: List[Dict]) -> Dict:
@@ -255,6 +318,48 @@ class OKXClient:
         if auto_cxl:
             params['autoCxl'] = 'true'
         return self._safe_call(self.trade.close_positions, **params)
+
+    def get_algos_pending(self, algo_type: str = 'conditional',
+                          inst_type: str = '', inst_id: str = '',
+                          after: str = '', before: str = '', limit: int = 100) -> Dict:
+        """查询未触发/进行中的条件单/止盈止损/TWAP/冰山
+        algoType: 1 条件单 / 2 OCO / 3 止盈止损 / 5 冰山 / 6 TWAP / 7 移动止盈 / 14 保证止损
+        也可传字符串：conditional/oco/oco_single/twap/iceberg/limit
+        """
+        from okx.consts import GET, ORDERS_ALGO_PENDING
+        params = {'algoType': str(algo_type), 'limit': str(min(limit, 100))}
+        if inst_type:
+            params['instType'] = inst_type
+        if inst_id:
+            params['instId'] = inst_id
+        if after:
+            params['after'] = after
+        if before:
+            params['before'] = before
+        return self._safe_call(self.trade._request_with_params, GET, ORDERS_ALGO_PENDING, params)
+
+    def get_algos_history(self, algo_type: str = 'conditional',
+                          state: str = '', inst_type: str = '', inst_id: str = '',
+                          limit: int = 100) -> Dict:
+        """查询已完成/已取消的条件单历史
+        state: 9 已完成/10 已撤回/11:已触发/12:已拒绝/13:部分触发
+        """
+        from okx.consts import GET, ORDERS_ALGO_HISTORY
+        params = {'algoType': str(algo_type), 'limit': str(min(limit, 100))}
+        if state:
+            params['state'] = state
+        if inst_type:
+            params['instType'] = inst_type
+        if inst_id:
+            params['instId'] = inst_id
+        return self._safe_call(self.trade._request_with_params, GET, ORDERS_ALGO_HISTORY, params)
+
+    def cancel_algos(self, algo_orders: List[Dict]) -> Dict:
+        """批量取消条件单
+        algo_orders: [{instId, algoId, ...}] 单次最多 10 个
+        """
+        from okx.consts import POST, CANCEL_ALGOS
+        return self._safe_call(self.trade._request_with_params, POST, CANCEL_ALGOS, algo_orders)
 
     # ==================== 账户接口 ====================
     def get_account_balance(self) -> Dict:

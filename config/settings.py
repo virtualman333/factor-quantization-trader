@@ -18,7 +18,7 @@ DEBUG = env.bool('DJANGO_DEBUG', default=True)
 ALLOWED_HOSTS = env.list('DJANGO_ALLOWED_HOSTS', default=['*'])
 
 INSTALLED_APPS = [
-    'django.contrib.admin',
+    # 注: 不使用 Django 自带 /admin/，管理端由前端 Vue 实现 (apps/account/admin_views.py)
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
@@ -35,7 +35,32 @@ INSTALLED_APPS = [
     'apps.account.AccountConfig',
     'apps.strategy.StrategyConfig',
     'apps.orders.OrdersConfig',
+    'apps.notifications.NotificationsConfig',
 ]
+
+# ---- 可选：drf-spectacular (OpenAPI 3.0 + Swagger UI) ----
+# pip install drf-spectacular 后自动启用。未安装时保持兼容。
+try:
+    import drf_spectacular  # noqa: F401
+    INSTALLED_APPS += ['drf_spectacular']
+except ImportError:
+    drf_spectacular = None
+
+if drf_spectacular is not None:
+    SPECTACULAR_SETTINGS = {
+        'TITLE': 'Factor Quant Trader API',
+        'DESCRIPTION': '因子量化交易系统 — 后端 API 文档与在线调试界面。\n'
+                       '默认需要登录（JWT Bearer Token 或 Session）。'
+                       '在生产环境（DEBUG=False）下请关闭 AllowAny。',
+        'VERSION': '1.0.0',
+        'SERVE_INCLUDE_SCHEMA': True,
+        'SCHEMA_PATH_PREFIX': '/api/',
+        'COMPONENT_SPLIT_REQUEST': True,
+        'ENUM_NAME_OVERRIDES': {
+            'StrategyTypeEnum': 'apps.strategy.models.StrategyConfig.STRATEGY_TYPE_CHOICES',
+            'OrderStateEnum': 'apps.orders.models.TradeOrder.STATE_CHOICES',
+        },
+    }
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
@@ -50,6 +75,26 @@ MIDDLEWARE = [
     'core.middleware.ApiErrorMiddleware',
     'core.quota_middleware.UserQuotaMiddleware',
 ]
+
+# ---- 性能监控（仅开发环境启用，生产环境由 DJANGO_DEBUG=False 关闭） ----
+if DEBUG:
+    INSTALLED_APPS += ['silk', 'debug_toolbar']
+    MIDDLEWARE = MIDDLEWARE + [
+        'silk.middleware.SilkyMiddleware',
+        'debug_toolbar.middleware.DebugToolbarMiddleware',
+    ]
+    # Debug Toolbar：仅本地回环 IP 显示（避免 API JSON 响应被注入）
+    DEBUG_TOOLBAR_CONFIG = {
+        'SHOW_TOOLBAR_CALLBACK': lambda request: DEBUG and request.META.get('REMOTE_ADDR') in (
+            '127.0.0.1', 'localhost',
+        ),
+        'SHOW_COLLAPSED': True,
+    }
+    # Silk：请求性能分析（数据保存在 DB，访问 /silk/）
+    SILKY_PYTHON_PROFILER = False
+    SILKY_AUTHENTICATION = False
+    SILKY_META = True
+    SILKY_MAX_RECORDED_REQUESTS = 2000
 
 ROOT_URLCONF = 'config.urls'
 
@@ -80,9 +125,15 @@ DATABASES = {
         'PASSWORD': env('MYSQL_PASSWORD', default='factor'),
         'HOST': env('MYSQL_HOST', default='127.0.0.1'),
         'PORT': env('MYSQL_PORT', default='3306'),
+        'CONN_MAX_AGE': 60,
+        'CONN_HEALTH_CHECKS': True,
         'OPTIONS': {
             'charset': 'utf8mb4',
             'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+            # 长耗时操作（回测/优化）时保持连接活跃
+            'connect_timeout': 10,
+            'read_timeout': 300,
+            'write_timeout': 300,
         },
     }
 }
@@ -141,6 +192,9 @@ REST_FRAMEWORK = {
     'EXCEPTION_HANDLER': 'core.exception_handler.custom_exception_handler',
 }
 
+if drf_spectacular is not None:
+    REST_FRAMEWORK['DEFAULT_SCHEMA_CLASS'] = 'drf_spectacular.openapi.AutoSchema'
+
 # CORS
 CORS_ALLOW_ALL_ORIGINS = DEBUG
 CORS_ALLOW_CREDENTIALS = True
@@ -152,6 +206,7 @@ if not DEBUG:
             'http://127.0.0.1:5173',
         ],
     )
+FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:5173')
 
 # JWT
 SIMPLE_JWT = {
@@ -170,6 +225,8 @@ CELERY_CACHE_BACKEND = 'django-cache'
 CELERY_TIMEZONE = 'Asia/Shanghai'
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 30 * 60
+# 记录任务参数（用于前端展示进行中的回测任务）
+CELERY_RESULT_EXTENDED = True
 CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 
 # 默认定时任务（可通过 django-celery-beat 管理界面调整）
@@ -181,6 +238,22 @@ CELERY_BEAT_SCHEDULE = {
     'execute-pending-signals-every-minute': {
         'task': 'apps.strategy.tasks.execute_pending_signals',
         'schedule': 60.0,
+    },
+    # Redis 内存监控（每 10 分钟）
+    'redis-memory-monitor-every-10min': {
+        'task': 'apps.account.tasks.redis_memory_monitor_task',
+        'schedule': 600.0,
+    },
+    # K 线数据清理（每天凌晨 3 点）
+    'clean-klines-every-day': {
+        'task': 'apps.market.tasks.clean_klines_task',
+        'schedule': 3 * 60 * 60,
+    },
+    # 交易品种定时同步（每天 4 点，SPOT + SWAP）
+    'sync-instruments-every-day': {
+        'task': 'apps.market.tasks.sync_instruments_task',
+        'schedule': 4 * 60 * 60,
+        'args': ['ALL'],
     },
 }
 

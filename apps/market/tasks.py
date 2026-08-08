@@ -4,21 +4,35 @@ from apps.market.services import MarketDataService
 
 
 @shared_task
-def sync_instruments_task():
-    """定时同步交易品种"""
-    for inst_type in ['SPOT', 'SWAP']:
+def sync_instruments_task(inst_type: str = 'ALL'):
+    """同步交易品种。
+
+    兼容两种调用：
+    - Celery Beat / 手动定时任务：不传参或传 'ALL' → 同步 SPOT + SWAP
+    - sync action / 其他场景：指定 'SPOT' 或 'SWAP' → 只同步单类型
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    types = ['SPOT', 'SWAP'] if inst_type in ('ALL', '') else [inst_type]
+    total = 0
+    for t in types:
         try:
-            MarketDataService.sync_instruments(inst_type=inst_type)
+            count = MarketDataService.sync_instruments(inst_type=t)
+            total += count
+            logger.info(f'[sync_instruments] {t} 同步完成，共 {count} 个品种')
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f'Sync instruments {inst_type} failed: {e}')
+            logger.error(f'[sync_instruments] {t} 同步失败: {e}')
+    return {'inst_type': inst_type, 'count': total}
 
 
 @shared_task
-def sync_tickers_task():
-    """定时同步行情快照"""
+def sync_tickers_task(inst_ids: list = None):
+    """同步行情快照（支持指定品种，缺省同步前50个活跃品种）"""
     from apps.market.models import Instrument
-    instruments = Instrument.objects.filter(is_active=True)[:50]
+    if inst_ids:
+        instruments = Instrument.objects.filter(is_active=True, inst_id__in=inst_ids)
+    else:
+        instruments = Instrument.objects.filter(is_active=True)[:50]
     for inst in instruments:
         try:
             MarketDataService.sync_ticker(inst.inst_id)
@@ -56,4 +70,37 @@ def async_fetch_klines_task(self, inst_id: str, bar: str, total: int = 500, befo
             self.retry(exc=e)
         except Exception:
             pass
+        return 0
+
+
+@shared_task
+def clean_klines_task():
+    """定时清理过期 K 线数据（保留每品种每周期最新 5000 条）"""
+    import logging
+    from datetime import timedelta
+    from django.utils import timezone
+    from apps.market.models import KLine
+
+    logger = logging.getLogger(__name__)
+    try:
+        keep = 5000
+        deleted = 0
+        keys = (KLine.objects.order_by('instrument_id', 'bar')
+                .values_list('instrument_id', 'bar').distinct())
+        for inst_id, bar_val in keys:
+            group = KLine.objects.filter(instrument_id=inst_id, bar=bar_val).order_by('-timestamp')
+            count = group.count()
+            if count <= keep:
+                continue
+            keep_ids = list(group.values_list('id', flat=True)[:keep])
+            deleted += group.exclude(id__in=keep_ids).delete()[0]
+        # 顺带清理90天前的分钟级数据（体积大且分析价值低）
+        cutoff = timezone.now() - timedelta(days=90)
+        old_min = KLine.objects.filter(
+            bar__in=['1m', '3m', '5m', '15m', '30m'], timestamp__lt=cutoff
+        ).delete()
+        logger.info(f'[clean_klines] 清理完成: 超量删除 {deleted} 条, 分钟级旧数据删除 {old_min[0]} 条')
+        return deleted
+    except Exception as e:
+        logger.error(f'[clean_klines] 清理失败: {e}')
         return 0

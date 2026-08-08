@@ -12,6 +12,7 @@ from django.utils import timezone
 from core.okx_client import get_okx_client
 from core.risk_manager import PositionInfo
 from apps.account.models import BalanceSnapshot, PositionSnapshot, NetValueHistory
+from apps.orders.models import TradeOrder
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +31,11 @@ class AccountService:
         total_eq_usd = Decimal('0')
         details = []
         for item in result.get('data', [])[0].get('details', []):
-            eq = Decimal(str(item.get('cashBal', item.get('eq', '0'))))
-            avail = Decimal(str(item.get('availBal', item.get('availEq', '0'))))
+            eq = Decimal(str(item.get('eq', item.get('cashBal', '0'))))
+            avail = Decimal(str(item.get('availEq', item.get('availBal', '0'))))
             frozen = Decimal(str(item.get('frozenBal', '0')))
-            usd_val = Decimal(str(item.get('usdPnl', item.get('usdEq', '0'))))
+            # 币种美元价值：OKX 字段为 usdEq / eqUsd；usdPnl 是未实现盈亏(通常为0)，不能用作估值
+            usd_val = Decimal(str(item.get('usdEq', item.get('eqUsd', '0'))))
             details.append({
                 'ccy': item['ccy'],
                 'total_eq': eq,
@@ -68,13 +70,25 @@ class AccountService:
             positions[inst_id] = PositionInfo(
                 inst_id=inst_id,
                 pos=pos_qty,
-                avg_px=float(item.get('avgPx', 0)),
-                mark_px=float(item.get('markPx', 0)),
-                upl=float(item.get('upl', 0)),
-                margin=float(item.get('margin', 0)),
-                leverage=float(item.get('lever', 1)),
+                avg_px=AccountService._to_float(item.get('avgPx')),
+                mark_px=AccountService._to_float(item.get('markPx')),
+                upl=AccountService._to_float(item.get('upl')),
+                margin=AccountService._to_float(item.get('margin')),
+                leverage=AccountService._to_float(item.get('lever'), 1),
+                pos_side=item.get('posSide', 'net'),
+                liq_px=AccountService._to_float(item.get('liqPx')),
             )
         return positions
+
+    @staticmethod
+    def _to_float(value, default=0.0) -> float:
+        """安全转换 OKX 数值字段（空字符串/None/非法值返回默认值）"""
+        if value is None or value == '':
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
 
     @staticmethod
     def snapshot_balance(user=None) -> List[BalanceSnapshot]:
@@ -151,3 +165,158 @@ class AccountService:
         )
         logger.info(f'净值记录: {total_eq_usd} USD, 日盈亏 {daily_pnl}')
         return record
+
+    # ========== 盈亏分析报表 ==========
+    @staticmethod
+    def pnl_report(user=None, period: str = 'month') -> Dict:
+        """盈亏分析报表
+        Args:
+            period: 'day' | 'week' | 'month' 聚合粒度
+        """
+        from datetime import timedelta
+        from collections import OrderedDict
+
+        qs = NetValueHistory.objects.filter(
+            user=user if user and user.is_authenticated else None
+        ).order_by('record_time')
+
+        # 时间范围：近90天数据足够聚合
+        since = timezone.now() - timedelta(days=90)
+        qs = qs.filter(record_time__gte=since)
+
+        records = list(qs)
+        if not records:
+            return {'period': period, 'items': [], 'summary': {}}
+
+        def _key(dt):
+            if period == 'day':
+                return dt.strftime('%Y-%m-%d')
+            if period == 'week':
+                iso = dt.isocalendar()
+                return f'{iso[0]}-W{iso[1]:02d}'
+            return dt.strftime('%Y-%m')
+
+        # 按期间聚合首尾净值差 = 期间盈亏
+        grouped = OrderedDict()
+        for r in records:
+            key = _key(r.record_time)
+            grouped.setdefault(key, {'first': None, 'last': None})
+            if grouped[key]['first'] is None or r.record_time < grouped[key]['first']['t']:
+                grouped[key]['first'] = {'t': r.record_time, 'eq': float(r.total_eq)}
+            if grouped[key]['last'] is None or r.record_time > grouped[key]['last']['t']:
+                grouped[key]['last'] = {'t': r.record_time, 'eq': float(r.total_eq)}
+
+        items = []
+        prev_last = None
+        for key, val in grouped.items():
+            pnl = val['last']['eq'] - val['first']['eq']
+            # 相对上一个期间的期末净值（若为独立期间则相对自身期初）
+            base = prev_last if prev_last is not None else val['first']['eq']
+            ratio = (pnl / base * 100) if base else 0
+            items.append({
+                'period': key,
+                'start_eq': round(val['first']['eq'], 4),
+                'end_eq': round(val['last']['eq'], 4),
+                'pnl': round(pnl, 4),
+                'pnl_ratio': round(ratio, 4),
+            })
+            prev_last = val['last']['eq']
+
+        total_pnl = sum(i['pnl'] for i in items)
+        base_eq = items[0]['start_eq'] if items else 0
+        summary = {
+            'total_pnl': round(total_pnl, 4),
+            'total_ratio': round((total_pnl / base_eq * 100), 4) if base_eq else 0,
+            'positive_periods': len([i for i in items if i['pnl'] > 0]),
+            'total_periods': len(items),
+        }
+        return {'period': period, 'items': items, 'summary': summary}
+
+    # ========== 手续费统计 ==========
+    @staticmethod
+    def fee_statistics(user=None, days: int = 30) -> Dict:
+        """手续费统计：基于订单记录中的 fee 字段（成交明细）"""
+        from collections import OrderedDict
+
+        since = timezone.now() - timedelta(days=days)
+        orders = TradeOrder.objects.filter(
+            user=user if user and user.is_authenticated else None,
+            created_at__gte=since,
+        )
+
+        total_fee = 0.0
+        by_inst = {}
+        daily = OrderedDict()
+        for o in orders:
+            fee = 0.0
+            # 从订单的成交记录或自身 fee 字段统计
+            try:
+                fills = o.fills or []
+                if fills:
+                    fee += sum(float(f.get('fee', 0)) for f in fills)
+            except (TypeError, ValueError):
+                pass
+            try:
+                if o.fee:
+                    fee += float(o.fee)
+            except (TypeError, ValueError):
+                pass
+            if not fee:
+                continue
+            total_fee += fee
+            by_inst[o.inst_id] = round(by_inst.get(o.inst_id, 0) + fee, 6)
+            day = o.created_at.strftime('%Y-%m-%d')
+            daily[day] = round(daily.get(day, 0) + fee, 6)
+
+        return {
+            'days': days,
+            'total_fee': round(total_fee, 6),
+            'by_inst': dict(sorted(by_inst.items(), key=lambda x: -x[1])),
+            'daily': daily,
+        }
+
+    # ========== 资金曲线与基准对比 ==========
+    @staticmethod
+    def equity_vs_benchmark(user=None, days: int = 30) -> Dict:
+        """资金曲线与 BTC 基准对比（归一化到100起点）"""
+        from apps.market.models import KLine, Instrument
+
+        since = timezone.now() - timedelta(days=days)
+        net_values = list(
+            NetValueHistory.objects.filter(
+                user=user if user and user.is_authenticated else None,
+                record_time__gte=since,
+            ).order_by('record_time')
+        )
+        equity = [{'time': r.record_time.isoformat(), 'value': float(r.total_eq)} for r in net_values]
+        if not equity:
+            return {'equity': [], 'benchmark': [], 'equity_label': '账户净值', 'benchmark_label': 'BTC'}
+
+        base_eq = equity[0]['value'] or 1
+        # BTC 1D K线作为基准
+        inst = Instrument.objects.filter(inst_id='BTC-USDT').first()
+        btc = []
+        if inst:
+            btc_rows = KLine.objects.filter(
+                instrument=inst, bar='1D', environment='demo',
+                timestamp__gte=since,
+            ).order_by('timestamp')
+            btc_klines = list(btc_rows)
+            if btc_klines:
+                base_close = float(btc_klines[0].close) or 1
+                btc = [
+                    {'time': k.timestamp.isoformat(), 'value': round(float(k.close) / base_close * 100, 4)}
+                    for k in btc_klines
+                ]
+
+        # 净值曲线归一化到100
+        equity_norm = [
+            {'time': e['time'], 'value': round(e['value'] / base_eq * 100, 4)}
+            for e in equity
+        ]
+        return {
+            'equity': equity_norm,
+            'benchmark': btc,
+            'equity_label': '账户净值',
+            'benchmark_label': 'BTC',
+        }

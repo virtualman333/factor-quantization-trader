@@ -96,24 +96,53 @@
   → 前端 Klines.vue watch 到 environment 变化 → 重建图表
 ```
 
-### `apps/strategy/` — 策略引擎
+### `apps/strategy/` — 策略引擎（可插拔架构）
 
 | 文件 | 职责 |
 |------|------|
-| `models.py` | `StrategyConfig`(3 种策略类型), `FactorDefinition`(因子定义), `SignalRecord`(信号), `TrackedPosition`(持仓跟踪), `BacktestResult`(回测) |
-| `services.py` | `StrategyEngine`: 因子计算 (`ta` 库) → 综合评分 → 信号生成 → 回测执行 → 策略运行 |
-| `views.py` | 策略/因子/信号/回测 CRUD + `run` 和 `backtest` action |
+| `base.py` | `BaseStrategy` 基类：策略规范（code/name/参数schema/信号接口）+ `StrategySignal`/`ParamSchema` |
+| `registry.py` | `StrategyRegistry` 注册表：`@register` 装饰器注册 + 自动发现 + meta 查询 |
+| `backtest_engine.py` | `BacktestEngine` 通用回测引擎：调用策略信号函数，统一状态机/估值/指标 |
+| `analysis.py` | 分析功能：蒙特卡洛 / Walk-forward / 参数优化 / 组合回测 / 对比 / IC / 相关性 / 市场状态 |
+| `strategies/` | 策略实现包：每个策略一个文件（`factor_composite`/`trend_follow`/`volume_breakout`） |
+| `services.py` | `StrategyService` 门面：信号生成分发、信号执行、持仓监控、回测统一入口 |
+| `models.py` | `StrategyConfig`(策略类型动态读取注册表), `FactorDefinition`, `SignalRecord`, `TrackedPosition`, `BacktestResult` |
+| `views.py` | 策略/因子/信号/回测 CRUD + `meta` 元数据接口（动态参数表单） |
 | `tasks.py` | Celery Beat 定时执行活跃策略 |
 
-**因子计算流程**:
+**统一策略规范（BaseStrategy 接口）**:
+```python
+class MyStrategy(BaseStrategy):
+    code = 'my_strategy'          # 策略类型标识
+    name = '我的策略'              # 显示名
+    MIN_BARS = 60                 # 最少K线数
+    PARAM_SCHEMA = [              # 参数 schema → 前端动态渲染表单
+        ParamSchema('threshold', '阈值', 'number', 0.5, 0, 1, 0.05, help_text='...'),
+    ]
+    def generate_signal(self, df, symbol, position=None, context=None) -> StrategySignal:
+        # 返回 buy/sell/close_long/close_short/hold
 ```
-StrategyEngine._compute_factors(kline_df)
-  → momentum (ROC), volatility (ATR/BBW)
-  → rsi, macd, bbands, volume_ratio, trend_strength (ADX)
-  → _normalize_factors() → 0~1 标准化
-  → _composite_score() → 加权综合评分
-  → _generate_signals() → buy/sell/hold
+
+**信号流程**:
 ```
+StrategyService.generate_signals(strategy)
+  → registry.get(strategy.strategy_type) 按类型分发
+  → 策略实例.generate_signal(df, symbol, position, context)
+  → filter_by_direction() 方向过滤（平仓不受限）
+  → SignalRecord 落库 + 通知推送
+```
+
+**回测流程（任何策略统一支持）**:
+```
+StrategyService.run_backtest(strategy, start, end)
+  → BacktestEngine.run() 加载K线 → 逐bar调用策略.generate_signal()
+  → 状态机开平仓 → mark-to-market 估值 → 指标统计 → BacktestResult
+```
+
+**新增策略（3 步）**:
+1. 在 `apps/strategy/strategies/` 新建文件，继承 `BaseStrategy` 实现接口
+2. 用 `@registry.register` 装饰器注册
+3. 前端自动从 `GET /strategy/configs/meta/` 获取类型下拉与参数表单，无需改前端
 
 ### `apps/orders/` — 订单管理
 
@@ -186,9 +215,11 @@ StrategyEngine._compute_factors(kline_df)
 
 ### 添加新的策略类型
 
-1. 在 `StrategyConfig.STRATEGY_TYPE_CHOICES` 中添加选项
-2. 在 `StrategyEngine` 中实现对应的信号生成逻辑
-3. 在回测逻辑中支持该策略类型
+1. 在 `apps/strategy/strategies/` 下新建文件，继承 `BaseStrategy`
+2. 定义 `code`/`name`/`PARAM_SCHEMA`，实现 `generate_signal()`
+3. 用 `@registry.register` 装饰器注册（或在 `strategies/__init__.py` 中 import）
+4. 策略类型自动出现在 `StrategyConfig` 下拉，参数表单按 schema 动态渲染
+5. 自动支持回测（通用 `BacktestEngine`）、Walk-forward、参数优化、组合回测
 
 ### 数据库变更
 

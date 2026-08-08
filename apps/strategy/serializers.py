@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import StrategyConfig, FactorDefinition, SignalRecord, BacktestResult
+from .models import StrategyConfig, FactorDefinition, SignalRecord, BacktestResult, StrategyPortfolio
 
 
 class FactorDefinitionSerializer(serializers.ModelSerializer):
@@ -16,9 +16,15 @@ class SignalRecordSerializer(serializers.ModelSerializer):
     pos_side_display = serializers.CharField(source='get_pos_side_display', read_only=True)
     strategy_name = serializers.CharField(source='strategy.name', read_only=True)
 
+    TD_MODE_LABELS = {'cash': '现金/现货', 'cross': '全仓合约', 'isolated': '逐仓合约'}
+    td_mode_display = serializers.SerializerMethodField()
+
     class Meta:
         model = SignalRecord
         fields = '__all__'
+
+    def get_td_mode_display(self, obj):
+        return self.TD_MODE_LABELS.get(obj.td_mode, obj.td_mode or '--')
 
 
 class StrategyConfigSerializer(serializers.ModelSerializer):
@@ -28,6 +34,7 @@ class StrategyConfigSerializer(serializers.ModelSerializer):
     td_mode_display = serializers.CharField(source='get_td_mode_display', read_only=True)
     username = serializers.CharField(source='user.username', read_only=True)
     signals_count = serializers.SerializerMethodField()
+    latest_backtest = serializers.SerializerMethodField()
 
     class Meta:
         model = StrategyConfig
@@ -37,6 +44,20 @@ class StrategyConfigSerializer(serializers.ModelSerializer):
     def get_signals_count(self, obj):
         return obj.signals.count()
 
+    def get_latest_backtest(self, obj):
+        bt = obj.backtests.order_by('-created_at').first()
+        if not bt:
+            return None
+        return {
+            'id': bt.id,
+            'total_return': bt.total_return,
+            'sharpe_ratio': bt.sharpe_ratio,
+            'max_drawdown': bt.max_drawdown,
+            'win_rate': bt.win_rate,
+            'total_trades': bt.total_trades,
+            'created_at': bt.created_at.isoformat() if bt.created_at else None,
+        }
+
 
 class BacktestResultSerializer(serializers.ModelSerializer):
     strategy_name = serializers.CharField(source='strategy.name', read_only=True)
@@ -44,3 +65,21 @@ class BacktestResultSerializer(serializers.ModelSerializer):
     class Meta:
         model = BacktestResult
         fields = '__all__'
+
+
+class StrategyPortfolioSerializer(serializers.ModelSerializer):
+    strategies_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StrategyPortfolio
+        fields = '__all__'
+        extra_kwargs = {'user': {'read_only': True}}
+
+    def get_strategies_display(self, obj):
+        return [
+            {
+                'strategy_id': s.get('strategy_id'),
+                'weight': s.get('weight'),
+            }
+            for s in (obj.strategies or [])
+        ]

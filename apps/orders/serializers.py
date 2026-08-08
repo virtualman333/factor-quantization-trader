@@ -1,5 +1,12 @@
 from rest_framework import serializers
-from .models import TradeOrder, OrderLog
+from .models import TradeOrder, OrderLog, OrderTemplate
+
+
+class OrderTemplateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OrderTemplate
+        fields = '__all__'
+        extra_kwargs = {'user': {'read_only': True}}
 
 
 class OrderLogSerializer(serializers.ModelSerializer):

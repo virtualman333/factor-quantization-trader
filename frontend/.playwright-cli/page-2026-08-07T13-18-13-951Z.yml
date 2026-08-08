@@ -1,0 +1,45 @@
+- generic [ref=f13e3]:
+  - complementary [ref=f13e4]:
+    - generic [ref=f13e5] [cursor=pointer]: 量化交易系统
+    - menubar [ref=f13e10]:
+      - menuitem "仪表盘" [ref=f13e11] [cursor=pointer]
+      - menuitem "行情数据" [expanded] [ref=f13e18]:
+        - menu:
+          - menuitem "交易品种" [ref=f13e29] [cursor=pointer]
+          - menuitem "K线数据" [ref=f13e30] [cursor=pointer]
+          - menuitem "实时行情" [ref=f13e31] [cursor=pointer]
+      - menuitem "账户管理" [ref=f13e32]
+      - menuitem "策略引擎" [ref=f13e43]
+      - menuitem "订单管理" [ref=f13e55]
+      - menuitem "系统设置" [ref=f13e64] [cursor=pointer]
+      - menuitem "个人中心" [ref=f13e69] [cursor=pointer]
+  - generic [ref=f13e74]:
+    - generic [ref=f13e75]:
+      - button [ref=f13e76] [cursor=pointer]
+      - generic [ref=f13e80]: K线数据
+      - generic [ref=f13e81]:
+        - button "模拟盘" [ref=f13e83] [cursor=pointer]
+        - generic: 实时未连接
+        - generic: 未连接
+        - button [ref=f13e89] [cursor=pointer]
+    - main [ref=f13e94]:
+      - generic [ref=f13e95]:
+        - generic [ref=f13e96]:
+          - heading "K线数据 模拟盘" [level=2] [ref=f13e97]:
+            - text: K线数据
+            - generic: 模拟盘
+          - generic [ref=f13e98]:
+            - generic [ref=f13e101]:
+              - combobox [ref=f13e103]
+              - generic [ref=f13e104]: BTC-USDT
+            - generic [ref=f13e106] [cursor=pointer]:
+              - generic:
+                - combobox [ref=f13e108]
+                - generic [ref=f13e109]: 1H
+            - generic [ref=f13e114]:
+              - button "500条" [ref=f13e115] [cursor=pointer]
+              - button "1000条" [ref=f13e117] [cursor=pointer]
+              - button "3000条" [ref=f13e119] [cursor=pointer]
+            - button "拉取" [ref=f13e121] [cursor=pointer]
+            - button "刷新" [disabled]
+        - generic [ref=f13e126]: 加载K线数据...

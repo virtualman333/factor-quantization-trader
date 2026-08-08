@@ -61,7 +61,7 @@ def build_strategy():
                 'tp_mode': 'fixed', 'tp_ratio': 1.5, 'trailing_trigger': 0.5,
                 'trailing_factor': 0.8, 'enhanced_no_single_pulse': False,
                 'risk_per_trade': 0.01, 'daily_max_stop': 3},
-        td_mode='cross', leverage=3, status='active',
+        td_mode='cross', leverage=3, status='active', direction='both',
     )
 
 
@@ -70,7 +70,7 @@ def run_with(strategy, df, positions_data):
     mock_client.get_positions.return_value = {'code': '0', 'data': positions_data}
     with patch('apps.strategy.services.get_okx_client', return_value=mock_client), \
          patch.object(MarketDataService, 'fetch_klines', return_value=None), \
-         patch.object(MarketDataService, 'get_klines_df', return_value=df):
+         patch.object(MarketDataService, 'get_klines_cached', return_value=df):
         return StrategyService._generate_volume_breakout_signals(strategy)
 
 

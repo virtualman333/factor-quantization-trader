@@ -15,5 +15,12 @@ django-celery-beat>=2.5
 django-celery-results>=2.5
 pytz>=2023.3
 mysqlclient>=2.2
+# 性能监控（开发环境）
+django-debug-toolbar>=4.3,<5.0
+django-silk>=5.0,<5.3
+flower>=2.0
+# 生产环境
 gunicorn>=21.2
 sentry-sdk[django]>=1.40
+# OpenAPI / Swagger 文档
+drf-spectacular>=0.27

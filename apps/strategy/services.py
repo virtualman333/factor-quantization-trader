@@ -1,459 +1,190 @@
 """
-策略引擎服务层
-提供信号生成、策略执行、回测等核心功能
+策略服务门面层
+
+对外提供统一的策略服务接口，内部委托给：
+- 策略注册表（registry）与策略实现（strategies/）
+- 通用回测引擎（backtest_engine）
+- 分析功能（analysis）
+
+新增策略无需修改本文件，只需在 strategies/ 下实现并注册。
 """
 
 import logging
-from datetime import datetime, timedelta
-from decimal import Decimal
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-import numpy as np
-import pandas as pd
-import ta
 from django.db import transaction
-
-
-from django.utils import timezone
 
 from apps.market.models import Instrument
 from apps.market.services import MarketDataService
 from apps.strategy.models import StrategyConfig, SignalRecord, BacktestResult
-from apps.strategy.factors import FactorEngine, FactorResult
+from apps.strategy.registry import registry
 from core.okx_client import get_okx_client
-from core.risk_manager import RiskManager, PositionInfo
 from core.exceptions import StrategyError
-
 
 logger = logging.getLogger(__name__)
 
 
+def _safe_push_signal(signal, user=None):
+    """信号通知推送（失败不影响主流程）。"""
+    try:
+        from apps.notifications.services import NotificationService
+        NotificationService.from_signal(signal, user=user)
+    except Exception as exc:  # pragma: no cover - 防御性
+        logger.warning(f'推送信号通知失败: {exc}', exc_info=False)
+
+
 class StrategyService:
-    """策略服务"""
+    """策略服务门面"""
 
-    # ========== 信号生成 ==========
+    # ========== 策略注册表访问 ==========
     @staticmethod
-    def _calculate_atr(df, atr_len=14):
-        """计算 ATR（真实波幅均值），返回与 df 等长的 Series"""
-        high = df['high'].astype(float)
-        low = df['low'].astype(float)
-        close = df['close'].astype(float)
-        prev_close = close.shift(1)
-        tr1 = high - low
-        tr2 = (high - prev_close).abs()
-        tr3 = (low - prev_close).abs()
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        atr = tr.rolling(window=atr_len, min_periods=atr_len).mean()
-        return atr
+    def get_strategy_impl(strategy: StrategyConfig):
+        """获取策略实现实例（按 strategy_type 分发）"""
+        return registry.get_or_error(strategy.strategy_type)(strategy)
 
+    @staticmethod
+    def strategy_meta_list() -> List[Dict]:
+        """所有已注册策略的元信息（前端下拉与动态参数表单）"""
+        return registry.meta_list()
+
+    # ========== 信号生成（统一入口，按注册表分发） ==========
     @staticmethod
     def generate_signals(strategy: StrategyConfig, user=None) -> List[SignalRecord]:
-        """为策略的所有标的生成交易信号"""
-        if strategy.strategy_type == 'trend_follow':
-            return StrategyService._generate_trend_signals(strategy, user=user)
-        if strategy.strategy_type == 'volume_breakout':
-            return StrategyService._generate_volume_breakout_signals(strategy, user=user)
-        return StrategyService._generate_factor_signals(strategy, user=user)
-
-    # ========== 放量跟随策略参数 ==========
-    DEFAULT_VOLUME_PARAMS = {
-        'vol_ma_len': 20,          # 成交量均线周期
-        'vol_ratio': 1.8,          # 放量倍数阈值
-        'trend_ma_len': 60,        # 趋势均线(震荡过滤)周期
-        'atr_len': 14,             # ATR 周期
-        'min_atr_factor': 0.0015,  # 最小波动阈值(占价格比例)
-        'cooling_min': 3,          # 同方向信号冷却(分钟)
-        'stop_loss_mul': 1.2,      # 止损 = 1.2 × entry_atr
-        'tp_mode': 'fixed',        # fixed=固定盈亏比 / trailing=移动止盈
-        'tp_ratio': 1.5,           # 固定止盈盈亏比
-        'trailing_trigger': 0.5,   # 盈利达 0.5×止损距离 启动移动止盈
-        'trailing_factor': 0.8,    # 追踪幅度 = 0.8 × entry_atr
-        'enhanced_no_single_pulse': False,  # 增强1：拒绝单根脉冲K
-        'risk_per_trade': 0.01,    # 单笔风险比例(账户0.5%~1%)
-        'daily_max_stop': 3,       # 单日连续止损次数上限
-    }
-
-    @staticmethod
-    def _vb_param(strategy, key, default=None):
-        """读取放量跟随策略参数，策略 params 优先，其次默认表"""
-        val = (strategy.params or {}).get(key, StrategyService.DEFAULT_VOLUME_PARAMS.get(key, default))
-        if val is None:
-            return default
-        return val
-
-    @staticmethod
-    def _generate_factor_signals(strategy: StrategyConfig, user=None) -> List[SignalRecord]:
-        """基于因子综合评分生成信号"""
+        """为策略的所有标的生成交易信号（按注册表分发到具体策略实现）"""
+        impl = StrategyService.get_strategy_impl(strategy)
         signals = []
 
         for symbol in strategy.symbols:
             try:
-                MarketDataService.fetch_klines(inst_id=symbol, bar=strategy.bar, limit=200, user=user)
-                df = MarketDataService.get_klines_df(inst_id=symbol, bar=strategy.bar, limit=200, user=user)
-
-                if df.empty:
-                    logger.warning(f'{symbol} 无K线数据，跳过信号生成')
+                # DB 优先读取，数据不足时后台异步补齐（不阻塞）
+                df = MarketDataService.get_klines_cached(
+                    inst_id=symbol, bar=strategy.bar, limit=200,
+                    min_required=impl.MIN_BARS, user=user,
+                )
+                if df.empty or len(df) < impl.MIN_BARS:
+                    logger.warning(f'{symbol} K线数据不足({len(df)}<{impl.MIN_BARS})，跳过信号生成')
                     continue
 
-                engine = FactorEngine(df)
-                engine.calculate_all(strategy.factors)
-                composite_score, composite_signal = engine.get_composite_score()
+                # 实时持仓（判断平仓）
+                position = StrategyService._current_position(strategy, symbol, user)
+
+                # 自定义因子（仅因子策略使用）
+                custom_factors = StrategyService._get_custom_factors(strategy, user=user)
+
+                sig = impl.generate_signal(
+                    df, symbol, position=position,
+                    context={'check_cooling': True, 'user': user,
+                             'custom_factors': custom_factors},
+                )
+                if sig.is_hold:
+                    continue
+
+                # 方向过滤：只约束开仓，平仓不受限
+                final_signal = impl.filter_by_direction(sig.signal)
+
+                # 现货不支持做空：无持仓时 sell（开空）信号必须被抑制，
+                # 只有已有持仓时才允许卖出（平多）
+                if StrategyService._is_spot(strategy):
+                    if final_signal == 'sell' and not (position and position.get('side') == 'long'):
+                        logger.info(f'现货 {symbol} 无持仓，抑制做空信号 sell')
+                        continue
+                    if final_signal in ('close_long', 'close_short'):
+                        if final_signal == 'close_short' or not (position and position.get('side') == 'long'):
+                            # 现货只有多头持仓，close_short 无意义，无持仓时 close_long 也跳过
+                            logger.info(f'现货 {symbol} 无对应持仓，跳过平仓信号 {final_signal}')
+                            continue
 
                 current_price = float(df['close'].iloc[-1])
-                final_signal = StrategyService._filter_by_direction(composite_signal, strategy.direction)
-
-                details = {
-                    name: {'value': r.value, 'score': round(r.score, 4), 'signal': r.signal}
-                    for name, r in engine._results.items()
-                }
-
-                signal = SignalRecord.objects.create(
+                record = SignalRecord.objects.create(
                     strategy=strategy,
                     inst_id=symbol,
                     signal=final_signal,
-                    pos_side=StrategyService._infer_pos_side(final_signal),
+                    pos_side=impl.infer_pos_side(final_signal),
                     td_mode=strategy.td_mode,
                     leverage=strategy.leverage,
-                    score=Decimal(str(round(composite_score, 4))),
-                    factors_detail=details,
-                    price=Decimal(str(round(current_price, 4))),
-                    reason=f'综合评分: {composite_score:.2f}, 成分: {composite_signal}',
+                    score=__import__('decimal').Decimal(str(round(sig.score, 4))),
+                    factors_detail=sig.detail,
+                    price=__import__('decimal').Decimal(str(round(current_price, 4))),
+                    reason=sig.reason,
+                    stop_loss_price=sig.stop_loss_price,
+                    take_profit_price=sig.take_profit_price,
+                    entry_atr=sig.entry_atr,
+                    tp_mode=sig.tp_mode,
                 )
-                signals.append(signal)
-
+                signals.append(record)
+                _safe_push_signal(record, user=user)
             except Exception as e:
-                logger.error(f'{symbol} 因子信号生成异常: {e}')
+                logger.error(f'{symbol} 信号生成异常: {e}')
 
-        logger.info(f'策略 [{strategy.name}] 生成 {len(signals)} 个因子信号')
+        logger.info(f'策略 [{strategy.name}] 生成 {len(signals)} 个信号')
         return signals
 
     @staticmethod
-    def _generate_trend_signals(strategy: StrategyConfig, user=None) -> List[SignalRecord]:
-        """基于趋势跟踪生成分钟级买卖信号"""
-        signals = []
-        client = get_okx_client(user=user)
-
-        # 获取当前持仓以判断是开仓还是平仓
-        positions = {}
-        try:
-            pos_resp = client.get_positions(inst_type=strategy.inst_type)
-            if pos_resp.get('code') == '0':
-                positions = {p['instId']: p for p in pos_resp.get('data', []) if float(p.get('pos', 0)) != 0}
-        except Exception as e:
-            logger.warning(f'获取持仓失败: {e}')
-
-        for symbol in strategy.symbols:
-            try:
-                MarketDataService.fetch_klines(inst_id=symbol, bar=strategy.bar, limit=200, user=user)
-                df = MarketDataService.get_klines_df(inst_id=symbol, bar=strategy.bar, limit=200, user=user)
-
-                if len(df) < 50:
-                    logger.warning(f'{symbol} K线数据不足，跳过')
-                    continue
-
-                signal_type, score, reason = StrategyService._trend_decision(
-                    df, strategy.direction, symbol, positions
-                )
-
-                if signal_type == 'hold':
-                    continue
-
-                current_price = float(df['close'].iloc[-1])
-                pos_side = StrategyService._infer_pos_side(signal_type)
-
-                signal = SignalRecord.objects.create(
-                    strategy=strategy,
-                    inst_id=symbol,
-                    signal=signal_type,
-                    pos_side=pos_side,
-                    td_mode=strategy.td_mode,
-                    leverage=strategy.leverage,
-                    score=Decimal(str(round(score, 4))),
-                    factors_detail={
-                        'ema_fast': round(float(df['close'].ewm(span=12, adjust=False).mean().iloc[-1]), 4),
-                        'ema_slow': round(float(df['close'].ewm(span=26, adjust=False).mean().iloc[-1]), 4),
-                        'close': round(current_price, 4),
-                    },
-                    price=Decimal(str(round(current_price, 4))),
-                    reason=reason,
-                )
-                signals.append(signal)
-
-            except Exception as e:
-                logger.error(f'{symbol} 趋势信号生成异常: {e}')
-
-        logger.info(f'策略 [{strategy.name}] 生成 {len(signals)} 个趋势信号')
-        return signals
+    def _is_spot(strategy: StrategyConfig, td_mode: str = '') -> bool:
+        """判断是否为现货交易（现货：td_mode=cash 或 inst_type=SPOT）"""
+        mode = (td_mode or strategy.td_mode or '').lower()
+        inst_type = (strategy.inst_type or '').upper()
+        return mode == 'cash' or inst_type == 'SPOT'
 
     @staticmethod
-    def _trend_decision(df, direction: str, symbol: str, positions: Dict) -> Tuple[str, float, str]:
-        """趋势判断：返回 (signal, score, reason)"""
-        close = df['close']
-        ema_fast = close.ewm(span=12, adjust=False).mean()
-        ema_slow = close.ewm(span=26, adjust=False).mean()
-        adx = ta.trend.ADXIndicator(df['high'], df['low'], df['close'], window=14).adx()
+    def _current_position(strategy: StrategyConfig, symbol: str, user=None) -> Optional[Dict]:
+        """查询当前持仓状态（用于平仓/防重复开仓判断）。
 
-        last_close = float(close.iloc[-1])
-        prev_fast = float(ema_fast.iloc[-2])
-        prev_slow = float(ema_slow.iloc[-2])
-        curr_fast = float(ema_fast.iloc[-1])
-        curr_slow = float(ema_slow.iloc[-1])
-        adx_value = float(adx.iloc[-1]) if not pd.isna(adx.iloc[-1]) else 0
-
-        # 判断当前持仓
-        current_pos = positions.get(symbol, {})
-        current_pos_side = current_pos.get('posSide', '')
-        current_pos_qty = abs(float(current_pos.get('pos', 0)))
-
-        score = min(adx_value / 50, 1.0) if adx_value > 20 else 0.3
-        trend_strong = adx_value >= 25
-
-        # 金叉 / 死叉
-        golden_cross = prev_fast <= prev_slow and curr_fast > curr_slow
-        death_cross = prev_fast >= prev_slow and curr_fast < curr_slow
-        above_ma = curr_fast > curr_slow and last_close > curr_fast
-        below_ma = curr_fast < curr_slow and last_close < curr_fast
-
-        # 平多：死叉 或 跌破慢线
-        if current_pos_side == 'long' and current_pos_qty > 0:
-            if death_cross or (last_close < curr_slow):
-                return 'close_long', 0.7, f'趋势反转/跌破均线，ADX={adx_value:.1f}'
-            return 'hold', 0, '持有多仓'
-
-        # 平空：金叉 或 突破慢线
-        if current_pos_side == 'short' and current_pos_qty > 0:
-            if golden_cross or (last_close > curr_slow):
-                return 'close_short', 0.7, f'趋势反转/突破均线，ADX={adx_value:.1f}'
-            return 'hold', 0, '持有空仓'
-
-        # 开多
-        if direction in ('long', 'both') and (golden_cross or (above_ma and trend_strong)):
-            reason = f'EMA金叉且趋势强劲，ADX={adx_value:.1f}' if golden_cross else f'均线多头排列，ADX={adx_value:.1f}'
-            return 'buy', score, reason
-
-        # 开空
-        if direction in ('short', 'both') and (death_cross or (below_ma and trend_strong)):
-            reason = f'EMA死叉且趋势强劲，ADX={adx_value:.1f}' if death_cross else f'均线空头排列，ADX={adx_value:.1f}'
-            return 'sell', score, reason
-
-        return 'hold', 0, f'无明确趋势，ADX={adx_value:.1f}'
-
-    @staticmethod
-    def _infer_pos_side(signal: str) -> str:
-        """根据信号推断持仓方向"""
-        if signal in ('buy', 'close_short'):
-            return 'long'
-        if signal in ('sell', 'close_long'):
-            return 'short'
-        return 'net'
-
-
-    @staticmethod
-    def _filter_by_direction(signal: str, direction: str) -> str:
-        """根据策略方向过滤信号"""
-        if direction == 'long':
-            return signal if signal in ('buy', 'close_short') else 'hold'
-        elif direction == 'short':
-            return signal if signal in ('sell', 'close_long') else 'hold'
-        elif direction == 'both':
-            return signal
-        return signal
-
-    # ========== 放量跟随策略信号 ==========
-    @staticmethod
-    def _generate_volume_breakout_signals(strategy: StrategyConfig, user=None) -> List[SignalRecord]:
-        """放量跟随策略：放量上涨做多 / 放量下跌做空 + 趋势过滤 + ATR过滤 + 冷却 + 强制反向平仓
-
-        适用 ETH/USDT 1min，现货/合约均可。
+        优先取 OKX 实际持仓；若 OKX 无持仓，但最近已有同向开仓信号
+        （已执行或待执行），仍视为"持有"该方向，避免反复发同向开仓信号。
         """
-        from django.db.models import Sum
-        from apps.strategy.models import TrackedPosition
-        from datetime import timedelta
-
-        signals = []
         client = get_okx_client(user=user)
+        spot = StrategyService._is_spot(strategy)
 
-        vol_ma_len = int(StrategyService._vb_param(strategy, 'vol_ma_len', 20))
-        vol_ratio = float(StrategyService._vb_param(strategy, 'vol_ratio', 1.8))
-        trend_ma_len = int(StrategyService._vb_param(strategy, 'trend_ma_len', 60))
-        atr_len = int(StrategyService._vb_param(strategy, 'atr_len', 14))
-        min_atr_factor = float(StrategyService._vb_param(strategy, 'min_atr_factor', 0.0015))
-        cooling_min = int(StrategyService._vb_param(strategy, 'cooling_min', 3))
-        stop_loss_mul = float(StrategyService._vb_param(strategy, 'stop_loss_mul', 1.2))
-        tp_mode = StrategyService._vb_param(strategy, 'tp_mode', 'fixed')
-        tp_ratio = float(StrategyService._vb_param(strategy, 'tp_ratio', 1.5))
-        enhanced1 = bool(StrategyService._vb_param(strategy, 'enhanced_no_single_pulse', False))
-        daily_max_stop = int(StrategyService._vb_param(strategy, 'daily_max_stop', 3))
-
-        # 当前 OKX 持仓（判断多/空方向）
-        positions = {}
         try:
-            pos_resp = client.get_positions(inst_type=strategy.inst_type)
-            if pos_resp.get('code') == '0':
-                for p in pos_resp.get('data', []):
-                    if float(p.get('pos', 0)) != 0:
-                        positions[p['instId']] = p
+            if spot:
+                # 现货：持仓 = 账户中该币种余额（现货无 get_positions 概念）
+                balance = client.get_account_balance()
+                if balance.get('code') == '0':
+                    base_ccy = symbol.split('-')[0] if '-' in symbol else symbol
+                    details = balance.get('data', [{}])[0].get('details', [])
+                    coin = next((d for d in details if d.get('ccy') == base_ccy), None)
+                    if coin:
+                        free = float(coin.get('availEq', coin.get('cashBal', 0)) or 0)
+                        frozen = float(coin.get('frozenBal', 0) or 0)
+                        total = free + frozen
+                        if total > 0:
+                            return {'side': 'long', 'pos': total,
+                                    'avail': free, 'spot': True}
+            else:
+                # 合约：用 OKX 持仓接口
+                pos_resp = client.get_positions(inst_type=strategy.inst_type)
+                if pos_resp.get('code') == '0':
+                    for p in pos_resp.get('data', []):
+                        if p.get('instId') == symbol and float(p.get('pos', 0)) != 0:
+                            return {'side': p.get('posSide'), 'pos': abs(float(p.get('pos', 0)))}
         except Exception as e:
             logger.warning(f'获取持仓失败: {e}')
 
-        # 当日止损停止：策略级当日累计止损次数达上限则当日不再开仓
-        today = timezone.now().date()
-        stop_sum = TrackedPosition.objects.filter(
-            strategy=strategy, daily_stop_date=today
-        ).aggregate(total=Sum('daily_stop_count'))['total'] or 0
-        stop_halted = stop_sum >= daily_max_stop
+        # 最近的开仓信号视为"虚拟持仓"（防重复开仓）
+        from apps.strategy.models import SignalRecord
+        from django.utils import timezone
+        from datetime import timedelta
+        recent = SignalRecord.objects.filter(
+            strategy=strategy, inst_id=symbol,
+            created_at__gte=timezone.now() - timedelta(hours=2),
+        ).order_by('-created_at').first()
+        if recent and recent.signal in ('buy', 'sell') and not recent.is_executed:
+            return {'side': 'long' if recent.signal == 'buy' else 'short',
+                    'pos': 0, 'pending': True}
+        return None
 
-        kline_limit = max(vol_ma_len, trend_ma_len) + atr_len + 10
-
-        for symbol in strategy.symbols:
-            try:
-                MarketDataService.fetch_klines(inst_id=symbol, bar=strategy.bar, limit=kline_limit, user=user)
-                df = MarketDataService.get_klines_df(inst_id=symbol, bar=strategy.bar, limit=kline_limit, user=user)
-                if len(df) < trend_ma_len + atr_len:
-                    logger.warning(f'{symbol} K线不足，跳过')
-                    continue
-
-                close = df['close'].astype(float)
-                high = df['high'].astype(float)
-                low = df['low'].astype(float)
-                vol = df['volume'].astype(float)
-                op = df['open'].astype(float)
-
-                vol_ma = vol.rolling(vol_ma_len).mean()
-                ma_trend = close.rolling(trend_ma_len).mean()
-                atr_series = StrategyService._calculate_atr(df, atr_len)
-
-                cur_vol = float(vol.iloc[-1])
-                cur_vol_ma = float(vol_ma.iloc[-1])
-                prev_vol = float(vol.iloc[-2])
-                cur_atr = float(atr_series.iloc[-1]) if not pd.isna(atr_series.iloc[-1]) else 0.0
-                cur_close = float(close.iloc[-1])
-                prev_close = float(close.iloc[-2])
-                cur_open = float(op.iloc[-1])
-                cur_ma = float(ma_trend.iloc[-1])
-
-                # 放量条件
-                is_burst = cur_vol_ma > 0 and cur_vol > cur_vol_ma * vol_ratio
-
-                # 增强条件1：前一根成交量 ≥ VOL_MA × 1.2
-                prev_burst_ok = True
-                if enhanced1:
-                    prev_burst_ok = prev_vol >= cur_vol_ma * 1.2
-
-                # K线方向：阳线+收盘创新高 / 阴线+收盘创新低
-                is_bull_k = (cur_close > cur_open) and (cur_close > prev_close)
-                is_bear_k = (cur_close < cur_open) and (cur_close < prev_close)
-
-                bull_signal = is_burst and is_bull_k and prev_burst_ok
-                bear_signal = is_burst and is_bear_k and prev_burst_ok
-
-                # ATR 过滤（震荡屏蔽）
-                atr_ok = cur_atr > 0 and cur_atr > min_atr_factor * cur_close
-
-                # 趋势方向过滤（顺着 MA60 大方向）
-                above_ma = cur_close > cur_ma
-                below_ma = cur_close < cur_ma
-
-                # 当前持仓方向（OKX）
-                cur_pos = positions.get(symbol, {})
-                pos_side = cur_pos.get('posSide', '')
-                has_long = pos_side == 'long' and float(cur_pos.get('pos', 0)) != 0
-                has_short = pos_side == 'short' and float(cur_pos.get('pos', 0)) != 0
-
-                # 冷却：距上次同向开仓信号≥cooling_min分钟
-                last_buy = SignalRecord.objects.filter(
-                    strategy=strategy, inst_id=symbol, signal='buy'
-                ).order_by('-created_at').first()
-                last_sell = SignalRecord.objects.filter(
-                    strategy=strategy, inst_id=symbol, signal='sell'
-                ).order_by('-created_at').first()
-                cooling_long_ok = (last_buy is None or
-                                   (timezone.now() - last_buy.created_at) >= timedelta(minutes=cooling_min))
-                cooling_short_ok = (last_sell is None or
-                                    (timezone.now() - last_sell.created_at) >= timedelta(minutes=cooling_min))
-
-                # 决策
-                signal_type = 'hold'
-                reason = ''
-                if has_long:
-                    if bear_signal:
-                        signal_type = 'close_long'
-                        reason = '持有多仓 + 触发标准空头放量信号 -> 强制平多(主力出逃)'
-                    else:
-                        reason = '持有多仓，等待出场'
-                elif has_short:
-                    if bull_signal:
-                        signal_type = 'close_short'
-                        reason = '持有空仓 + 触发标准多头放量信号 -> 强制平空(主力出逃)'
-                    else:
-                        reason = '持有空仓，等待出场'
-                else:
-                    if stop_halted:
-                        reason = f'当日止损已达上限({daily_max_stop}笔)，停止开仓'
-                    elif bull_signal and above_ma and atr_ok and cooling_long_ok:
-                        signal_type = 'buy'
-                        reason = f'放量上涨+顺势(价>MA{trend_ma_len})+ATR过滤+冷却OK'
-                    elif bear_signal and below_ma and atr_ok and cooling_short_ok:
-                        signal_type = 'sell'
-                        reason = f'放量下跌+顺势(价<MA{trend_ma_len})+ATR过滤+冷却OK'
-                    else:
-                        bits = []
-                        if not (bull_signal or bear_signal):
-                            bits.append('无放量同向K')
-                        if not atr_ok:
-                            bits.append('ATR过小/震荡屏蔽')
-                        if not (above_ma or below_ma):
-                            bits.append('价格缠绕MA')
-                        reason = ';'.join(bits) or '条件不满足'
-
-                if signal_type == 'hold':
-                    continue
-
-                # 计算入场止损/止盈价
-                stop_loss_price = take_profit_price = None
-                if signal_type in ('buy', 'sell'):
-                    if signal_type == 'buy':
-                        sl = cur_close - stop_loss_mul * cur_atr
-                        tp = (cur_close + tp_ratio * (cur_close - sl)) if tp_mode == 'fixed' else None
-                    else:
-                        sl = cur_close + stop_loss_mul * cur_atr
-                        tp = (cur_close - tp_ratio * (sl - cur_close)) if tp_mode == 'fixed' else None
-                    stop_loss_price = round(sl, 8)
-                    take_profit_price = round(tp, 8) if tp else None
-
-                sig = SignalRecord.objects.create(
-                    strategy=strategy,
-                    inst_id=symbol,
-                    signal=signal_type,
-                    pos_side=StrategyService._infer_pos_side(signal_type),
-                    td_mode=strategy.td_mode,
-                    leverage=strategy.leverage,
-                    score=Decimal('0.8'),
-                    factors_detail={
-                        'vol': round(cur_vol, 2),
-                        'vol_ma': round(cur_vol_ma, 2),
-                        'close': round(cur_close, 4),
-                        'ma': round(cur_ma, 4),
-                        'atr': round(cur_atr, 8),
-                        'bull_signal': bull_signal,
-                        'bear_signal': bear_signal,
-                        'atr_ok': atr_ok,
-                        'above_ma': above_ma,
-                    },
-                    price=Decimal(str(round(cur_close, 8))),
-                    reason=reason,
-                    stop_loss_price=Decimal(str(stop_loss_price)) if stop_loss_price else None,
-                    take_profit_price=Decimal(str(take_profit_price)) if take_profit_price else None,
-                    entry_atr=Decimal(str(round(cur_atr, 8))) if cur_atr else None,
-                    tp_mode=tp_mode,
-                )
-                signals.append(sig)
-
-            except Exception as e:
-                logger.error(f'{symbol} 放量跟随信号生成异常: {e}')
-
-        logger.info(f'策略 [{strategy.name}] 生成 {len(signals)} 个放量跟随信号')
-        return signals
+    @staticmethod
+    def _get_custom_factors(strategy: StrategyConfig, user=None) -> List[Dict]:
+        """获取用户的启用的自定义因子列表"""
+        from apps.strategy.models import FactorDefinition
+        qs = FactorDefinition.objects.filter(
+            is_active=True, is_custom=True, user=strategy.user
+        )
+        if not qs.exists():
+            return []
+        return [{'name': f.name, 'formula': f.formula} for f in qs if f.formula]
 
     # ========== 信号执行 ==========
     @staticmethod
@@ -468,18 +199,14 @@ class StrategyService:
         td_mode = signal.td_mode or strategy.td_mode or 'cash'
         leverage = float(signal.leverage or strategy.leverage or 1)
 
-        # 合约模式下设置杠杆
         if td_mode in ('cross', 'isolated'):
             try:
                 client.set_leverage(
-                    lever=str(int(leverage)),
-                    mgn_mode=td_mode,
-                    inst_id=signal.inst_id,
+                    lever=str(int(leverage)), mgn_mode=td_mode, inst_id=signal.inst_id,
                 )
             except Exception as e:
                 logger.warning(f'设置杠杆失败（可能已设置）: {e}')
 
-        # 获取账户余额
         balance = client.get_account_balance()
         if balance['code'] != '0':
             raise StrategyError(f'获取余额失败: {balance.get("msg")}')
@@ -494,19 +221,17 @@ class StrategyService:
             if ticker['code'] == '0' and ticker['data']:
                 current_price = float(ticker['data'][0]['last'])
 
-        # 仓位大小
-        if (strategy.strategy_type == 'volume_breakout'
-                and signal.signal in ('buy', 'sell') and signal.stop_loss_price is not None):
-            # 风险公式：仓位 = 账户资金 × 风险比例 ÷ (入场价与止损价价差)
-            risk_pct = float(StrategyService._vb_param(strategy, 'risk_per_trade', 0.01))
+        # 仓位大小：有止损价的开仓信号用风险公式，其余按比例
+        impl = StrategyService.get_strategy_impl(strategy)
+        if signal.signal in ('buy', 'sell') and signal.stop_loss_price is not None:
+            risk_pct = float(impl.param('risk_per_trade', 0.01))
             sl_price = float(signal.stop_loss_price)
             sl_dist = abs(current_price - sl_price)
             if sl_dist <= 0:
                 logger.warning(f'信号 #{signal.id} 止损距离为0，跳过')
                 return None
             risk_amount = available_usd * risk_pct
-            order_value = risk_amount / sl_dist * current_price  # 名义价值
-            # 合约保证金保护：名义价值不超过 可用×杠杆
+            order_value = risk_amount / sl_dist * current_price
             if td_mode != 'cash':
                 order_value = min(order_value, available_usd * leverage * current_price)
         else:
@@ -518,30 +243,62 @@ class StrategyService:
             return None
 
         sz = str(round(order_value / current_price, 6)) if current_price > 0 else '0'
-
         side, pos_side = StrategyService._signal_to_order_params(signal.signal)
         if not side:
             logger.info(f'信号 #{signal.id} 为 hold，无需下单')
             return None
 
+        # ===== 现货风控：不能没仓位就卖；只有合约才可以开空 =====
+        is_spot = StrategyService._is_spot(strategy, td_mode)
+        tgt_ccy = ''
+        if is_spot:
+            # 现货做空（无持仓的 sell）一律拒绝
+            if signal.signal == 'sell':
+                logger.warning(f'现货 {signal.inst_id} 不能做空，拒绝执行信号 #{signal.id}')
+                return None
+            # 现货平多（close_long）：必须有持仓，且卖出数量不超过持仓
+            if signal.signal in ('close_long', 'sell'):
+                spot_pos = StrategyService._current_position(strategy, signal.inst_id, user)
+                if not spot_pos or spot_pos.get('side') != 'long':
+                    logger.warning(f'现货 {signal.inst_id} 无持仓，拒绝卖出')
+                    return None
+                # 卖出数量 = 持仓数量（市价全平），不传 posSide
+                sz = str(round(float(spot_pos.get('pos')), 6))
+            else:
+                # 现货市价买单：sz 需按计价币金额（tgtCcy=quote_ccy）
+                try:
+                    ticker = client.get_ticker(signal.inst_id)
+                    if ticker.get('code') == '0' and ticker.get('data'):
+                        last = float(ticker['data'][0]['last'])
+                        if last > 0:
+                            sz = str(round(float(sz) * last, 6))
+                            tgt_ccy = 'quote_ccy'
+                except Exception as e:
+                    logger.warning(f'现货市价买单换算金额失败: {e}')
+            pos_side = ''  # 现货不传 posSide
+
+        # 现货订单不传 client_oid：OKX 现货对 clOrdId 校验严格（卖单常报 51000）
+        submit_cl_oid = '' if is_spot else f'qt{signal.id}'
+        # 合约单向持仓(net_mode)：不传 posSide，平仓信号用 reduceOnly
+        submit_pos_side = ''
+        reduce_only = False
+        if not is_spot:
+            if signal.signal in ('close_long', 'close_short'):
+                reduce_only = True
         try:
             result = client.place_order(
-                inst_id=signal.inst_id,
-                td_mode=td_mode,
-                side=side,
-                pos_side=pos_side,
-                ord_type='market',
-                sz=sz,
+                inst_id=signal.inst_id, td_mode=td_mode, side=side,
+                pos_side=submit_pos_side, ord_type='market', sz=sz,
+                tgt_ccy=tgt_ccy, reduce_only=reduce_only,
+                client_oid=submit_cl_oid,
             )
-
             if result['code'] == '0':
                 signal.is_executed = True
                 signal.save(update_fields=['is_executed'])
-                logger.info(f'信号 #{signal.id} 执行成功: {signal.inst_id} {signal.signal} td_mode={td_mode} leverage={leverage}')
-                # 放量跟随：维护持仓跟踪
+                logger.info(f'信号 #{signal.id} 执行成功: {signal.inst_id} {signal.signal} '
+                            f'td_mode={td_mode} leverage={leverage}')
                 StrategyService._sync_tracked_position_after_exec(signal, strategy, td_mode)
                 return result
-
         except Exception as e:
             logger.error(f'执行信号 #{signal.id} 失败: {e}')
             raise StrategyError(f'Order failed: {e}') from e
@@ -559,11 +316,12 @@ class StrategyService:
         }
         return mapping.get(signal, (None, None))
 
-    # ========== 持仓跟踪与监控（放量跟随出场管理） ==========
+    # ========== 持仓跟踪（放量跟随出场管理） ==========
     @staticmethod
     def _sync_tracked_position_after_exec(signal: SignalRecord, strategy: StrategyConfig, td_mode: str):
         """信号执行成功后，维护持仓跟踪状态"""
-        if strategy.strategy_type != 'volume_breakout':
+        # 无止损价的开仓信号不创建持仓跟踪；平仓信号仍尝试更新已有持仓
+        if signal.signal in ('buy', 'sell') and not signal.stop_loss_price:
             return
         from apps.strategy.models import TrackedPosition
         if signal.signal in ('buy', 'sell'):
@@ -572,9 +330,9 @@ class StrategyService:
                 strategy=strategy, inst_id=signal.inst_id,
                 defaults={
                     'side': side,
-                    'entry_price': signal.price or Decimal('0'),
-                    'entry_atr': signal.entry_atr or Decimal('0'),
-                    'stop_loss_price': signal.stop_loss_price or Decimal('0'),
+                    'entry_price': signal.price or __import__('decimal').Decimal('0'),
+                    'entry_atr': signal.entry_atr or __import__('decimal').Decimal('0'),
+                    'stop_loss_price': signal.stop_loss_price or __import__('decimal').Decimal('0'),
                     'take_profit_price': signal.take_profit_price,
                     'tp_mode': signal.tp_mode or 'fixed',
                     'highest_price': signal.price,
@@ -591,29 +349,33 @@ class StrategyService:
                 strategy=strategy, inst_id=signal.inst_id, is_open=True).first()
             if tp:
                 tp.is_open = False
-                tp.close_time = timezone.now()
+                tp.close_time = __import__('django.utils.timezone', fromlist=['timezone']).timezone.now()
                 tp.exit_reason = signal.reason or 'signal'
                 tp.save()
-                logger.info(f'持仓跟踪已关闭: {signal.inst_id} 原因={tp.exit_reason}')
 
     @staticmethod
     def monitor_positions_for_strategy(strategy: StrategyConfig):
         """监控放量跟随策略持仓：硬止损 / 固定止盈 / 移动止盈，并统计单日止损"""
         from apps.strategy.models import TrackedPosition
+        from apps.strategy.services import StrategyService as S
+        from django.utils import timezone
         from datetime import timedelta
 
-        if strategy.strategy_type != 'volume_breakout':
+        if not TrackedPosition.objects.filter(strategy=strategy, is_open=True).exists():
             return
         client = get_okx_client(user=strategy.user)
-        trailing_trigger = float(StrategyService._vb_param(strategy, 'trailing_trigger', 0.5))
-        trailing_factor = float(StrategyService._vb_param(strategy, 'trailing_factor', 0.8))
+        impl = S.get_strategy_impl(strategy)
+        trailing_trigger = float(impl.param('trailing_trigger', 0.5))
+        trailing_factor = float(impl.param('trailing_factor', 0.8))
         today = timezone.now().date()
 
         open_positions = TrackedPosition.objects.filter(strategy=strategy, is_open=True)
         for tp in open_positions:
             try:
-                MarketDataService.fetch_klines(inst_id=tp.inst_id, bar=strategy.bar, limit=limit, user=strategy.user)
-                df = MarketDataService.get_klines_df(inst_id=tp.inst_id, bar=strategy.bar, limit=limit, user=strategy.user)
+                df = MarketDataService.get_klines_cached(
+                    inst_id=tp.inst_id, bar=strategy.bar, limit=100,
+                    min_required=60, user=strategy.user,
+                )
                 if df.empty:
                     continue
                 cur_price = float(df['close'].iloc[-1])
@@ -621,9 +383,9 @@ class StrategyService:
                 cur_low = float(df['low'].iloc[-1])
 
                 if tp.highest_price is None or cur_high > float(tp.highest_price):
-                    tp.highest_price = Decimal(str(cur_high))
+                    tp.highest_price = __import__('decimal').Decimal(str(cur_high))
                 if tp.lowest_price is None or cur_low < float(tp.lowest_price):
-                    tp.lowest_price = Decimal(str(cur_low))
+                    tp.lowest_price = __import__('decimal').Decimal(str(cur_low))
 
                 sl = float(tp.stop_loss_price)
                 entry = float(tp.entry_price)
@@ -633,38 +395,32 @@ class StrategyService:
                 exit_reason = ''
                 if tp.side == 'long':
                     if cur_price <= sl:
-                        triggered = True
-                        exit_reason = 'stop_loss'
+                        triggered, exit_reason = True, 'stop_loss'
                     elif tp.tp_mode == 'fixed' and tp.take_profit_price and cur_price >= float(tp.take_profit_price):
-                        triggered = True
-                        exit_reason = 'take_profit'
+                        triggered, exit_reason = True, 'take_profit'
                     elif tp.tp_mode == 'trailing':
                         if cur_price - entry >= trailing_trigger * sl_dist:
                             tp.trailing_active = True
                         if tp.trailing_active:
                             trail = float(tp.highest_price) - trailing_factor * float(tp.entry_atr)
-                            tp.trailing_stop_price = Decimal(str(round(trail, 8)))
+                            tp.trailing_stop_price = __import__('decimal').Decimal(str(round(trail, 8)))
                             if cur_price <= trail:
-                                triggered = True
-                                exit_reason = 'trailing_stop'
-                else:  # short
+                                triggered, exit_reason = True, 'trailing_stop'
+                else:
                     if cur_price >= sl:
-                        triggered = True
-                        exit_reason = 'stop_loss'
+                        triggered, exit_reason = True, 'stop_loss'
                     elif tp.tp_mode == 'fixed' and tp.take_profit_price and cur_price <= float(tp.take_profit_price):
-                        triggered = True
-                        exit_reason = 'take_profit'
+                        triggered, exit_reason = True, 'take_profit'
                     elif tp.tp_mode == 'trailing':
                         if entry - cur_price >= trailing_trigger * sl_dist:
                             tp.trailing_active = True
                         if tp.trailing_active:
                             trail = float(tp.lowest_price) + trailing_factor * float(tp.entry_atr)
-                            tp.trailing_stop_price = Decimal(str(round(trail, 8)))
+                            tp.trailing_stop_price = __import__('decimal').Decimal(str(round(trail, 8)))
                             if cur_price >= trail:
-                                triggered = True
-                                exit_reason = 'trailing_stop'
+                                triggered, exit_reason = True, 'trailing_stop'
 
-                # 校验 OKX 实际持仓是否还存在（防止手动平仓导致跟踪漂移）
+                # 校验 OKX 实际持仓
                 try:
                     pos_resp = client.get_positions(inst_type=strategy.inst_type)
                     all_pos = pos_resp.get('data', []) if pos_resp.get('code') == '0' else []
@@ -688,34 +444,33 @@ class StrategyService:
 
                 if triggered:
                     side = 'sell' if tp.side == 'long' else 'buy'
-                    pos_side = tp.side
                     try:
                         result = client.place_order(
                             inst_id=tp.inst_id, td_mode=strategy.td_mode,
-                            side=side, pos_side=pos_side, ord_type='market', sz=sz,
+                            side=side, ord_type='market', sz=sz,
+                            reduce_only=True,  # 平仓：单向模式不需要 posSide
                         )
                         if result.get('code') == '0':
                             tp.is_open = False
                             tp.close_time = timezone.now()
                             tp.exit_reason = exit_reason
-                            # 单日止损统计
                             if exit_reason == 'stop_loss':
                                 if tp.daily_stop_date != today:
                                     tp.daily_stop_count = 0
                                     tp.daily_stop_date = today
                                 tp.daily_stop_count += 1
                             tp.save()
-                            SignalRecord.objects.create(
+                            close_sig = SignalRecord.objects.create(
                                 strategy=strategy, inst_id=tp.inst_id,
                                 signal='close_long' if tp.side == 'long' else 'close_short',
                                 pos_side=pos_side, td_mode=strategy.td_mode,
-                                leverage=strategy.leverage, score=Decimal('0.5'),
-                                price=Decimal(str(cur_price)),
+                                leverage=strategy.leverage, score=__import__('decimal').Decimal('0.5'),
+                                price=__import__('decimal').Decimal(str(cur_price)),
                                 reason=f'监控触发出场: {exit_reason}',
                                 is_executed=True,
                             )
-                            logger.info(f'监控平仓成功: {tp.inst_id} {tp.side} 原因={exit_reason} '
-                                        f'止损计数={tp.daily_stop_count}')
+                            _safe_push_signal(close_sig, user=strategy.user)
+                            logger.info(f'监控平仓成功: {tp.inst_id} {tp.side} 原因={exit_reason}')
                     except Exception as e:
                         logger.error(f'监控平仓失败: {tp.inst_id} {e}')
             except Exception as e:
@@ -723,158 +478,287 @@ class StrategyService:
 
     @staticmethod
     def monitor_all_active_strategies():
-        """监控所有活跃的放量跟随策略持仓"""
-        from apps.strategy.models import StrategyConfig
-        for strategy in StrategyConfig.objects.filter(status='active', strategy_type='volume_breakout'):
+        """监控所有活跃策略持仓（硬止损 / 固定止盈 / 移动止盈）"""
+        for strategy in StrategyConfig.objects.filter(status='active'):
             try:
                 StrategyService.monitor_positions_for_strategy(strategy)
             except Exception as e:
                 logger.error(f'监控策略 [{strategy.name}] 失败: {e}')
 
-
-    # ========== 回测 ==========
+    # ========== 回测（统一入口，委托通用回测引擎） ==========
     @staticmethod
     def run_backtest(strategy: StrategyConfig,
-                     start_date: datetime, end_date: datetime, user=None) -> BacktestResult:
-        """简单回测引擎（基于历史K线）"""
-        from apps.market.models import KLine
-        from apps.account.models import SystemConfig
-        import numpy as np
+                     start_date: datetime, end_date: datetime, user=None,
+                     fee_rate: float = 0.001, slippage: float = 0.001) -> BacktestResult:
+        """回测引擎（通用）：调用策略自身信号逻辑，支持手续费/滑点模拟"""
+        from apps.strategy.backtest_engine import BacktestEngine
+        from decimal import Decimal
 
-        env = SystemConfig.get_config(user=user).active_environment
-
-        # 获取所有标的的历史K线（按当前环境过滤）
-        all_klines = KLine.objects.filter(
-            environment=env,
-            instrument__inst_id__in=strategy.symbols,
-            bar=strategy.bar,
-            timestamp__gte=start_date,
-            timestamp__lte=end_date,
-        ).order_by('timestamp')
-
-        if not all_klines.exists():
-            raise StrategyError('回测区间内无K线数据')
-
-        capital = float(strategy.initial_capital)
-        initial_capital = capital
-        equity_curve = [(start_date, capital)]
-        trades_log = []
-
-        # 按时间分组
-        from itertools import groupby
-        grouped = groupby(all_klines, key=lambda k: k.timestamp)
-
-        for timestamp, klines_group in grouped:
-            # 每根K线评估一次信号
-            for kline in klines_group:
-                sym = kline.instrument.inst_id
-                # 获取该时间点前的K线数据用于因子计算
-                df = MarketDataService.get_klines_df(
-                    inst_id=sym, bar=strategy.bar, limit=200, user=user
-                )
-                if df.empty:
-                    continue
-
-                # 过滤到当前时间之前
-                df = df[df.index <= timestamp]
-                if len(df) < 50:
-                    continue
-
-                engine = FactorEngine(df)
-                engine.calculate_all(strategy.factors)
-                score, sig = engine.get_composite_score()
-                sig = StrategyService._filter_by_direction(sig, strategy.direction)
-
-                price = float(kline.close)
-                trade_pct = float(strategy.order_size_pct)
-
-                if sig == 'buy':
-                    amount = capital * trade_pct
-                    qty = amount / price
-                    capital -= amount
-                    trades_log.append({
-                        'timestamp': timestamp, 'symbol': sym,
-                        'action': 'buy', 'price': price, 'amount': amount,
-                        'capital': capital,
-                    })
-
-                elif sig == 'sell':
-                    # 清算持仓
-                    for t in list(trades_log):
-                        if t['symbol'] == sym and t['action'] == 'buy':
-                            proceeds = t['amount'] * (price / t['price'])
-                            pnl = proceeds - t['amount']
-                            capital += proceeds
-                            trades_log.remove(t)
-                            trades_log.append({
-                                'timestamp': timestamp, 'symbol': sym,
-                                'action': 'sell', 'price': price,
-                                'pnl': pnl, 'capital': capital,
-                            })
-                            break
-
-            equity_curve.append((timestamp, capital))
-
-        # 计算回测指标
-        final_capital = capital
-        total_return = (final_capital - initial_capital) / initial_capital if initial_capital > 0 else 0
-
-        # 交易日数
-        days = max((end_date - start_date).days, 1)
-        annual_return = (1 + total_return) ** (365 / days) - 1 if days > 0 else 0
-
-        # 最大回撤
-        equity_values = [v for _, v in equity_curve]
-        peak = equity_values[0]
-        max_dd = 0
-        for v in equity_values:
-            if v > peak:
-                peak = v
-            dd = (peak - v) / peak if peak > 0 else 0
-            max_dd = max(max_dd, dd)
-
-        # 统计交易结果
-        buy_trades = [t for t in trades_log if t.get('action') == 'buy']
-        sell_trades = [t for t in trades_log if t.get('pnl') is not None]
-        total_trades = len(buy_trades) + len(sell_trades)
-        profit_trades = sum(1 for t in sell_trades if t['pnl'] > 0)
-        loss_trades = sum(1 for t in sell_trades if t['pnl'] <= 0)
-
-        win_rate = profit_trades / len(sell_trades) if sell_trades else 0
-        profits = [t['pnl'] for t in sell_trades if t['pnl'] > 0]
-        losses = [abs(t['pnl']) for t in sell_trades if t['pnl'] <= 0]
-
-        avg_profit = np.mean(profits) if profits else 0
-        avg_loss = np.mean(losses) if losses else 0
-        profit_factor = sum(profits) / sum(losses) if losses and sum(losses) > 0 else 0
-
-        # 夏普比率
-        returns = []
-        prev = initial_capital
-        for _, v in equity_curve[1:]:
-            if prev > 0:
-                returns.append((v - prev) / prev)
-            prev = v
-        sharpe = (np.mean(returns) / np.std(returns) * np.sqrt(365)) if returns else 0
+        engine = BacktestEngine(strategy, user=user, fee_rate=fee_rate, slippage=slippage)
+        m = engine.run(start_date=start_date, end_date=end_date)
 
         result = BacktestResult.objects.create(
             strategy=strategy,
             start_date=start_date,
             end_date=end_date,
-            initial_capital=Decimal(str(initial_capital)),
-            final_capital=Decimal(str(final_capital)),
-            total_return=Decimal(str(total_return)),
-            annual_return=Decimal(str(annual_return)),
-            sharpe_ratio=Decimal(str(round(float(sharpe), 4))),
-            max_drawdown=Decimal(str(max_dd)),
-            win_rate=Decimal(str(win_rate)),
-            total_trades=total_trades,
-            profit_trades=profit_trades,
-            loss_trades=loss_trades,
-            avg_profit=Decimal(str(round(float(avg_profit), 4))),
-            avg_loss=Decimal(str(round(float(avg_loss), 4))),
-            profit_factor=Decimal(str(round(float(profit_factor), 4))),
-            equity_curve=[(ts.isoformat(), float(v)) for ts, v in equity_curve],
+            initial_capital=Decimal(str(m['initial_capital'])),
+            final_capital=Decimal(str(m['final_capital'])),
+            total_return=Decimal(str(m['total_return'])),
+            annual_return=Decimal(str(m['annual_return'])),
+            sharpe_ratio=Decimal(str(round(float(m['sharpe_ratio']), 4))),
+            max_drawdown=Decimal(str(m['max_drawdown'])),
+            win_rate=Decimal(str(m['win_rate'])),
+            total_trades=m['total_trades'],
+            profit_trades=m['profit_trades'],
+            loss_trades=m['loss_trades'],
+            avg_profit=Decimal(str(round(float(m['avg_profit']), 4))),
+            avg_loss=Decimal(str(round(float(m['avg_loss']), 4))),
+            profit_factor=Decimal(str(round(float(m['profit_factor']), 4))),
+            equity_curve=m['equity_curve'],
+            fee_rate=Decimal(str(fee_rate)),
+            slippage=Decimal(str(slippage)),
+            trade_detail=m['trade_detail'],
         )
-        logger.info(f'回测完成: 总收益 {total_return:.2%}, 夏普 {sharpe:.2f}, 最大回撤 {max_dd:.2%}')
+        logger.info(f'回测完成: 总收益 {m["total_return"]:.2%}, '
+                    f'夏普 {m["sharpe_ratio"]:.2f}, 最大回撤 {m["max_drawdown"]:.2%}')
         return result
+
+    # ========== 回测报告导出（HTML） ==========
+    @staticmethod
+    def export_backtest_html(backtest_result: BacktestResult) -> str:
+        """生成回测报告 HTML（可直接打印为 PDF）"""
+        from datetime import datetime
+
+        curve = backtest_result.equity_curve or []
+        curve_rows = ''.join(
+            f'<tr><td>{ts[:16].replace("T", " ")}</td><td>{float(v):,.2f}</td></tr>'
+            for ts, v in curve[-500:]
+        )
+        trades = backtest_result.trade_detail or []
+        trade_rows = ''.join(
+            f'<tr><td>{t.get("timestamp", "")}</td><td>{t.get("symbol", "")}</td>'
+            f'<td>{t.get("action", "")}</td><td>{t.get("price", "")}</td>'
+            f'<td>{t.get("amount", "")}</td><td>{t.get("pnl", "-")}</td>'
+            f'<td>{t.get("fee", "-")}</td></tr>'
+            for t in trades[-200:]
+        )
+
+        return f"""<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>回测报告 - {backtest_result.strategy.name}</title>
+<style>
+body {{ font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; margin: 30px; color: #333; }}
+h1 {{ border-bottom: 2px solid #409eff; padding-bottom: 8px; }}
+h2 {{ margin-top: 28px; color: #409eff; }}
+table {{ border-collapse: collapse; width: 100%; margin-top: 10px; }}
+th, td {{ border: 1px solid #ddd; padding: 6px 10px; font-size: 13px; text-align: right; }}
+th {{ background: #f5f7fa; }}
+.metrics {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 16px; }}
+.metric {{ border: 1px solid #ebeef5; border-radius: 8px; padding: 12px; text-align: center; }}
+.metric .label {{ color: #909399; font-size: 12px; }}
+.metric .value {{ font-size: 20px; font-weight: bold; margin-top: 4px; }}
+.positive {{ color: #67c23a; }}
+.negative {{ color: #f56c6c; }}
+@media print {{ body {{ margin: 10mm; }} }}
+</style>
+</head>
+<body>
+<h1>策略回测报告</h1>
+<p>策略: <b>{backtest_result.strategy.name}</b> | 类型: {backtest_result.strategy.get_strategy_type_display()}</p>
+<p>回测区间: {backtest_result.start_date.strftime('%Y-%m-%d')} ~ {backtest_result.end_date.strftime('%Y-%m-%d')} | 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
+
+<h2>核心指标</h2>
+<div class="metrics">
+  <div class="metric"><div class="label">总收益率</div><div class="value {'positive' if float(backtest_result.total_return)>=0 else 'negative'}">{float(backtest_result.total_return)*100:.2f}%</div></div>
+  <div class="metric"><div class="label">年化收益率</div><div class="value">{float(backtest_result.annual_return or 0)*100:.2f}%</div></div>
+  <div class="metric"><div class="label">夏普比率</div><div class="value">{backtest_result.sharpe_ratio}</div></div>
+  <div class="metric"><div class="label">最大回撤</div><div class="value negative">{float(backtest_result.max_drawdown)*100:.2f}%</div></div>
+  <div class="metric"><div class="label">胜率</div><div class="value">{float(backtest_result.win_rate)*100:.1f}%</div></div>
+  <div class="metric"><div class="label">交易次数</div><div class="value">{backtest_result.total_trades}</div></div>
+  <div class="metric"><div class="label">盈亏比</div><div class="value">{backtest_result.profit_factor}</div></div>
+  <div class="metric"><div class="label">初始/最终资金</div><div class="value" style="font-size:14px">{backtest_result.initial_capital} → {backtest_result.final_capital}</div></div>
+</div>
+
+<h2>权益曲线</h2>
+<table>
+<tr><th>时间</th><th>权益</th></tr>
+{curve_rows}
+</table>
+
+<h2>交易明细（最近{min(len(trades),200)}笔）</h2>
+<table>
+<tr><th>时间</th><th>品种</th><th>方向</th><th>价格</th><th>金额</th><th>盈亏</th><th>手续费</th></tr>
+{trade_rows}
+</table>
+
+<p style="margin-top:20px;color:#909399;font-size:12px">手续费率 {backtest_result.fee_rate} | 滑点 {backtest_result.slippage}</p>
+</body>
+</html>"""
+
+    # ========== 分析功能（委托 analysis 模块） ==========
+    @staticmethod
+    def run_monte_carlo(backtest_result: BacktestResult, n_simulations: int = 1000) -> Dict:
+        from apps.strategy.analysis import run_monte_carlo
+        return run_monte_carlo(backtest_result.equity_curve or [], n_simulations=n_simulations)
+
+    @staticmethod
+    def run_walk_forward(strategy, start_date, end_date, window_days=14, user=None) -> Dict:
+        from apps.strategy.analysis import run_walk_forward
+        return run_walk_forward(strategy, start_date, end_date, window_days=window_days, user=user)
+
+    @staticmethod
+    def optimize_params(strategy, start_date, end_date, param_grid=None, user=None) -> List[Dict]:
+        from apps.strategy.analysis import optimize_params
+        return optimize_params(strategy, start_date, end_date, param_grid or {}, user=user)
+
+    @staticmethod
+    def optimize_factor_weights(strategy, start_date, end_date, user=None, iterations=10) -> Dict:
+        from apps.strategy.analysis import optimize_factor_weights
+        return optimize_factor_weights(strategy, start_date, end_date, user=user, iterations=iterations)
+
+    @staticmethod
+    def run_portfolio_backtest(portfolio, start_date, end_date, user=None) -> Dict:
+        from apps.strategy.analysis import run_portfolio_backtest
+        return run_portfolio_backtest(portfolio, start_date, end_date, user=user)
+
+    @staticmethod
+    def compare_strategies(strategy_ids, start_date, end_date, user=None) -> List[Dict]:
+        from apps.strategy.analysis import compare_strategies
+        return compare_strategies(strategy_ids, start_date, end_date, user=user)
+
+    @staticmethod
+    def run_multi_symbol_backtest(strategy, start_date, end_date, user=None,
+                                  fee_rate=0.001, slippage=0.001) -> Dict:
+        from apps.strategy.analysis import run_multi_symbol_backtest
+        return run_multi_symbol_backtest(strategy, start_date, end_date, user=user,
+                                         fee_rate=fee_rate, slippage=slippage)
+
+    @staticmethod
+    def strategy_ranking(user=None, limit=10) -> List[Dict]:
+        """策略收益排行：按最近回测总收益排序"""
+        from django.db.models import Max
+
+        rows = []
+        strategies = StrategyConfig.objects.filter(user=user).annotate(
+            latest_bt=Max('backtests__created_at')
+        )
+        for s in strategies:
+            bt = s.backtests.order_by('-created_at').first()
+            rows.append({
+                'id': s.id,
+                'name': s.name,
+                'strategy_type': s.strategy_type,
+                'symbols': s.symbols,
+                'status': s.status,
+                'latest_return': float(bt.total_return) if bt else None,
+                'latest_sharpe': float(bt.sharpe_ratio or 0) if bt else None,
+                'backtest_date': bt.created_at.isoformat() if bt else None,
+            })
+        rows.sort(key=lambda r: (r['latest_return'] is not None, r['latest_return'] or -999), reverse=True)
+        return rows[:limit]
+
+    @staticmethod
+    def factor_heatmap(user=None, n_signals=200) -> List[Dict]:
+        """因子热力图：各策略各因子的平均得分/方向贡献"""
+        signals = list(
+            SignalRecord.objects.filter(strategy__user=user)
+            .order_by('-created_at')[:n_signals]
+        )
+        if not signals:
+            return []
+
+        agg = {}
+        for sig in signals:
+            detail = sig.factors_detail or {}
+            if not isinstance(detail, dict):
+                continue
+            strategy_key = sig.strategy.name if sig.strategy else 'unknown'
+            agg.setdefault(strategy_key, {})
+            for factor, score in detail.items():
+                try:
+                    score = float(score)
+                except (TypeError, ValueError):
+                    continue
+                agg[strategy_key].setdefault(factor, []).append(score)
+
+        result = []
+        for strategy_name, factors in agg.items():
+            for factor, scores in factors.items():
+                result.append({
+                    'strategy': strategy_name,
+                    'factor': factor,
+                    'score': round(sum(scores) / len(scores), 4),
+                    'samples': len(scores),
+                })
+        result.sort(key=lambda r: -r['score'])
+        return result
+
+    @staticmethod
+    def market_overview(user=None, limit=20) -> List[Dict]:
+        """市场概览：涨跌幅排行"""
+        from apps.market.models import Ticker
+        from apps.account.models import SystemConfig
+
+        env = SystemConfig.get_config(user=user).active_environment
+        tickers = Ticker.objects.select_related('instrument').filter(
+            instrument__is_active=True
+        )[:limit * 2]
+
+        rows = []
+        for t in tickers:
+            try:
+                last = float(t.last)
+                open24 = float(t.open_24h) if t.open_24h else 0
+            except (TypeError, ValueError):
+                continue
+            if not last or not open24:
+                continue
+            change = (last - open24) / open24 * 100
+            rows.append({
+                'inst_id': t.instrument.inst_id,
+                'last': last,
+                'change_pct': round(change, 2),
+                'vol_24h': float(t.vol_24h) if t.vol_24h else 0,
+            })
+        rows.sort(key=lambda r: -r['change_pct'])
+        return rows[:limit]
+
+    @staticmethod
+    def correlation_matrix(symbols, bar='1D', limit=200, user=None) -> Dict:
+        from apps.strategy.analysis import correlation_matrix
+        return correlation_matrix(symbols, bar=bar, limit=limit, user=user)
+
+    @staticmethod
+    def factor_ic_analysis(strategy, bar='1D', lookback=100, user=None) -> Dict:
+        from apps.strategy.analysis import factor_ic_analysis
+        return factor_ic_analysis(strategy, bar=bar, lookback=lookback, user=user)
+
+    @staticmethod
+    def market_state(inst_id, bar='1D', lookback=60, user=None) -> Dict:
+        from apps.strategy.analysis import market_state
+        return market_state(inst_id, bar=bar, lookback=lookback, user=user)
+
+    # ========== 兼容旧接口（脚本测试使用） ==========
+    @staticmethod
+    def _generate_volume_breakout_signals(strategy, user=None) -> List[SignalRecord]:
+        """兼容脚本测试：调用新的策略实现生成信号"""
+        return StrategyService.generate_signals(strategy, user=user)
+
+    @staticmethod
+    def _vb_param(strategy, key, default=None):
+        """兼容旧调用：读取策略参数"""
+        impl = StrategyService.get_strategy_impl(strategy)
+        return impl.param(key, default)
+
+    @staticmethod
+    def _filter_by_direction(signal, direction):
+        """兼容旧调用：方向过滤"""
+        if signal in ('close_long', 'close_short', 'hold'):
+            return signal
+        if direction == 'long':
+            return signal if signal in ('buy',) else 'hold'
+        if direction == 'short':
+            return signal if signal in ('sell',) else 'hold'
+        return signal

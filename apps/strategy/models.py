@@ -6,6 +6,27 @@ from django.conf import settings
 from django.db import models
 
 
+class LazyChoices:
+    """懒加载 choices：既可迭代（通过 Django 字段检查）又可调用（flatchoices 动态获取）。
+    用于策略类型，使新增策略无需修改模型字段定义。
+    """
+
+    def __init__(self, fn):
+        self._fn = fn
+
+    def __iter__(self):
+        return iter(self._fn())
+
+    def __call__(self):
+        return self._fn()
+
+
+def _strategy_type_choices():
+    """动态读取策略注册表，新增策略无需改模型"""
+    from apps.strategy.registry import registry
+    return [(cls.code, cls.name) for cls in registry.all()]
+
+
 class StrategyConfig(models.Model):
     """策略配置"""
 
@@ -15,6 +36,8 @@ class StrategyConfig(models.Model):
         ('paused', '已暂停'),
         ('stopped', '已停止'),
     ]
+    # 策略类型：延迟到首次访问时从注册表动态生成
+    STRATEGY_TYPE_CHOICES = LazyChoices(_strategy_type_choices)
 
     DIRECTION_CHOICES = [
         ('long', '只做多'),
@@ -26,12 +49,6 @@ class StrategyConfig(models.Model):
         ('cash', '现金/现货'),
         ('cross', '全仓合约'),
         ('isolated', '逐仓合约'),
-    ]
-
-    STRATEGY_TYPE_CHOICES = [
-        ('factor_composite', '因子综合评分'),
-        ('trend_follow', '趋势跟踪'),
-        ('volume_breakout', '放量跟随'),
     ]
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
@@ -64,6 +81,8 @@ class StrategyConfig(models.Model):
     # 因子配置
     factors = models.JSONField('使用因子列表', default=list,
                                 help_text='例如: ["momentum", "volatility", "rsi", "macd"]')
+    factor_weights = models.JSONField('因子权重', default=dict, blank=True,
+                                      help_text='因子权重映射，如 {"momentum": 0.3, "rsi": 0.2}；留空则等权')
 
     # 策略专属参数（放量跟随等策略的可调超参）
     params = models.JSONField('策略参数', default=dict, blank=True,
@@ -101,6 +120,11 @@ class FactorDefinition(models.Model):
     factor_type = models.CharField('因子类型', max_length=20, choices=FACTOR_TYPE_CHOICES)
     description = models.TextField('因子描述', blank=True)
     params = models.JSONField('因子参数', default=dict, help_text='JSON格式的参数配置')
+    # 自定义因子：用户可配置的计算逻辑（pandas 表达式，基于 df 列 open/high/low/close/volume）
+    formula = models.TextField('计算公式', blank=True,
+                               help_text='自定义因子 pandas 表达式，如 close/close.rolling(20).mean()-1。'
+                                         '方向: 值越大越看多')
+    is_custom = models.BooleanField('是否自定义', default=False)
     is_active = models.BooleanField('是否启用', default=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
 
@@ -228,6 +252,13 @@ class BacktestResult(models.Model):
     avg_loss = models.DecimalField('平均亏损', max_digits=20, decimal_places=4, null=True)
     profit_factor = models.DecimalField('盈亏比', max_digits=8, decimal_places=4, null=True)
     equity_curve = models.JSONField('权益曲线', default=list)
+    # ---- 回测增强 ----
+    fee_rate = models.DecimalField('手续费率', max_digits=8, decimal_places=6, default=0.001)
+    slippage = models.DecimalField('滑点(百分比)', max_digits=8, decimal_places=6, default=0.001)
+    trade_detail = models.JSONField('交易明细', default=list)
+    monte_carlo = models.JSONField('蒙特卡洛模拟', default=dict, blank=True)
+    walk_forward = models.JSONField('Walk-forward分析', default=dict, blank=True)
+    is_optimized = models.BooleanField('是否优化结果', default=False)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
 
     class Meta:
@@ -238,3 +269,31 @@ class BacktestResult(models.Model):
 
     def __str__(self):
         return f'{self.strategy.name} 回测 [{self.start_date.date()}~{self.end_date.date()}] 收益: {self.total_return:.2%}'
+
+
+class StrategyPortfolio(models.Model):
+    """多策略组合管理：策略组合 + 资金分配"""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                             related_name='portfolios', verbose_name='所属用户',
+                             null=True, default=None)
+    name = models.CharField('组合名称', max_length=100)
+    description = models.TextField('组合描述', blank=True)
+    # 组合内策略及资金权重: [{"strategy_id": 1, "weight": 0.5}, ...] weight 求和=1
+    strategies = models.JSONField('组合策略及权重', default=list,
+                                  help_text='[{"strategy_id": 1, "weight": 0.5}]')
+    initial_capital = models.DecimalField('初始资金(USD)', max_digits=20, decimal_places=4, default=1000)
+    status = models.CharField('状态', max_length=10, choices=[
+        ('active', '运行中'), ('paused', '已暂停'), ('stopped', '已停止'),
+    ], default='stopped')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        db_table = 'strategy_portfolio'
+        verbose_name = '策略组合'
+        verbose_name_plural = verbose_name
+        unique_together = [('user', 'name')]
+
+    def __str__(self):
+        return f'{self.name} ({len(self.strategies)}个策略)'

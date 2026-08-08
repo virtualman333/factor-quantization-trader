@@ -1,0 +1,29 @@
+feat(P1-1): 实时通知系统 - 信号/订单/风控埋点 + 前端铃铛+抽屉+轮询toast
+
+【后端】
+- strategy/services.py 新增 _safe_push_signal 安全包装函数，在4处信号创建入口
+  (_generate_factor_signals / _generate_trend_signals / _generate_volume_signals
+  / 监控平仓 close_sig) 埋点推送 strategy/signal_generated 通知
+- orders/services.py 新增 _safe_notify_order / _safe_notify_risk 两个安全包装函数
+  1) risk_mgr.pre_order_check 捕获 OrderRejectedError 后推送 risk_warning
+  2) OKX 挂出成功 (result code==0) 显式 push 一条 "订单已挂出"
+  3) OKX 拒绝 (live->failed) + cancel_order 撤单成功 + sync_order_status状态变更
+     三处都调用 from_order_state 推送通知
+  全部推送失败不影响主流程 (try/except pass)
+
+【前端】
+- stores/notifications.js: Pinia Store
+  * 30s 轮询 startPolling/stopPolling
+  * getNotificationSummary (顶栏角标) + fetchList（对比上次ID, 新消息最多弹3条 toast）
+  * markRead / markAllRead / remove / clearAll 写操作
+- components/NotificationCenter.vue: 右侧 Drawer 抽屉
+  * 工具栏：只看未读 + 7种类型筛选 + 刷新 + 全部已读 + 清空
+  * 类型汇总 chips 显示 by_type 计数, 点击切换筛选
+  * 卡片列表：图标 + level 标签 + 标题 + 正文 + 时间 + 标已读/前往/删除
+  * 未读卡片蓝色高亮 + 圆点标识
+  * 点击卡片自动标已读 并 跳转 target_route (解析 query string 给 router)
+- layout/MainLayout.vue
+  * 顶部 header-right 新增 Bell 铃铛按钮 (el-badge 显示未读数)
+  * 挂载 NotificationCenter 抽屉
+  * 全局快捷键 Ctrl+N 打开消息中心
+  * onMounted 启动 notifyStore.startPolling()，onUnmounted 清理 stopPolling()

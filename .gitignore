@@ -55,6 +55,10 @@ staticfiles/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/.playwright-cli/
+frontend/*.png
+frontend/network.txt
+frontend/django_*.log
 
 # OS
 .DS_Store

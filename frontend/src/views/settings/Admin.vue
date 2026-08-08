@@ -172,10 +172,12 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'Admin' })
 import { ref, reactive, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { adminApi } from '@/api/admin.js'
+import { formatDateTime } from '@/utils/time'
 
 const activeTab = ref('users')
 const loading = ref(false)
@@ -211,8 +213,8 @@ const statCards = computed(() => [
 ])
 
 function formatDate(dateStr) {
-  if (!dateStr) return '--'
-  return new Date(dateStr).toLocaleString('zh-CN')
+  // 统一按北京时间显示
+  return formatDateTime(dateStr)
 }
 
 async function loadUsers() {

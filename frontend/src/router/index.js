@@ -18,7 +18,7 @@ const routes = [
         path: 'dashboard',
         name: 'Dashboard',
         component: () => import('@/views/dashboard/Index.vue'),
-        meta: { title: '仪表盘', icon: 'Odometer' },
+        meta: { title: '仪表盘', icon: 'Odometer', noCache: true },
       },
       {
         path: 'market/instruments',
@@ -30,13 +30,13 @@ const routes = [
         path: 'market/klines',
         name: 'Klines',
         component: () => import('@/views/market/Klines.vue'),
-        meta: { title: 'K线数据', icon: 'TrendCharts' },
+        meta: { title: 'K线数据', icon: 'TrendCharts', noCache: true },
       },
       {
         path: 'market/tickers',
         name: 'Tickers',
         component: () => import('@/views/market/Tickers.vue'),
-        meta: { title: '实时行情', icon: 'DataLine' },
+        meta: { title: '实时行情', icon: 'DataLine', noCache: true },
       },
       {
         path: 'account/balances',
@@ -55,6 +55,18 @@ const routes = [
         name: 'NetValue',
         component: () => import('@/views/account/NetValue.vue'),
         meta: { title: '净值曲线', icon: 'DataAnalysis' },
+      },
+      {
+        path: 'account/analysis',
+        name: 'AccountAnalysis',
+        component: () => import('@/views/account/Analysis.vue'),
+        meta: { title: '账户分析', icon: 'TrendCharts' },
+      },
+      {
+        path: 'analysis',
+        name: 'DataAnalysis',
+        component: () => import('@/views/analysis/Index.vue'),
+        meta: { title: '数据分析', icon: 'Histogram' },
       },
       {
         path: 'strategy/list',
@@ -79,6 +91,12 @@ const routes = [
         name: 'Backtests',
         component: () => import('@/views/strategy/Backtests.vue'),
         meta: { title: '回测结果', icon: 'Histogram' },
+      },
+      {
+        path: 'strategy/portfolios',
+        name: 'Portfolios',
+        component: () => import('@/views/strategy/Portfolios.vue'),
+        meta: { title: '策略组合', icon: 'Files' },
       },
       {
         path: 'orders/list',

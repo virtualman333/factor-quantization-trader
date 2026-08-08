@@ -14,6 +14,7 @@ from apps.account.serializers import (
 )
 from apps.account.services import AccountService
 from core.okx_client import OKXClient, reset_okx_client
+from core.redis_monitor import get_redis_memory_info
 
 
 def get_active_credential(user):
@@ -38,6 +39,15 @@ class SystemConfigViewSet(viewsets.ViewSet):
         config.save()
         reset_okx_client(user_id=request.user.id)
         return Response(SystemConfigSerializer(config).data)
+
+    @action(detail=False, methods=['get'])
+    def redis_status(self, request):
+        """Redis 内存使用监控（INFO 解析）"""
+        try:
+            info = get_redis_memory_info()
+            return Response(info)
+        except Exception as e:
+            return Response({'error': f'Redis 不可用: {e}'}, status=500)
 
 
 class OKXCredentialViewSet(viewsets.ModelViewSet):
@@ -72,6 +82,27 @@ class OKXCredentialViewSet(viewsets.ModelViewSet):
     def perform_destroy(self, instance):
         instance.delete()
         reset_okx_client(user_id=self.request.user.id)
+
+    @action(detail=False, methods=['get'])
+    def pnl_report(self, request):
+        """盈亏分析报表（日/周/月聚合）"""
+        period = request.query_params.get('period', 'month')
+        data = AccountService.pnl_report(user=request.user, period=period)
+        return Response(data)
+
+    @action(detail=False, methods=['get'])
+    def fee_statistics(self, request):
+        """手续费统计"""
+        days = int(request.query_params.get('days', 30))
+        data = AccountService.fee_statistics(user=request.user, days=days)
+        return Response(data)
+
+    @action(detail=False, methods=['get'])
+    def equity_benchmark(self, request):
+        """资金曲线与 BTC 基准对比"""
+        days = int(request.query_params.get('days', 30))
+        data = AccountService.equity_vs_benchmark(user=request.user, days=days)
+        return Response(data)
 
     @action(detail=False, methods=['get'])
     def active(self, request):
@@ -165,7 +196,7 @@ class BalanceSnapshotViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['get'])
     def live(self, request):
-        """获取实时余额（直接从 OKX）"""
+        """获取实时余额（直接从 OKX，单次请求耗时低，保持同步）"""
         try:
             balance = AccountService.get_balance_from_api(user=request.user)
             return Response(balance)
@@ -179,7 +210,12 @@ class PositionSnapshotViewSet(viewsets.ReadOnlyModelViewSet):
     filterset_fields = ['inst_id', 'pos_side']
 
     def get_queryset(self):
-        return PositionSnapshot.objects.filter(user=self.request.user)
+        qs = PositionSnapshot.objects.filter(user=self.request.user)
+        # 支持 inst_type 过滤（SPOT/SWAP）
+        inst_type = self.request.query_params.get('inst_type', '').strip()
+        if inst_type:
+            qs = qs.filter(inst_id__endswith=f'-{inst_type}')
+        return qs
 
     @action(detail=False, methods=['post'])
     def snapshot(self, request):
@@ -191,17 +227,25 @@ class PositionSnapshotViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['get'])
     def live(self, request):
-        """获取实时持仓"""
+        """获取实时持仓（数组格式，字段与前端对齐）"""
         try:
             inst_type = request.query_params.get('inst_type', '')
             positions = AccountService.get_positions_from_api(inst_type, user=request.user)
             return Response({
-                inst_id: {
-                    'pos': p.pos, 'avg_px': p.avg_px,
-                    'mark_px': p.mark_px, 'upl': p.upl,
-                    'margin': p.margin, 'leverage': p.leverage,
-                }
-                for inst_id, p in positions.items()
+                'results': [
+                    {
+                        'inst_id': p.inst_id,
+                        'pos_side': p.pos_side,
+                        'pos': p.pos,
+                        'avg_px': p.avg_px,
+                        'mark_px': p.mark_px,
+                        'upl': p.upl,
+                        'margin': p.margin,
+                        'leverage': p.leverage,
+                        'liq_px': p.liq_px,
+                    }
+                    for p in positions.values()
+                ],
             })
         except Exception as e:
             return Response({'error': str(e)}, status=500)
@@ -220,3 +264,23 @@ class NetValueHistoryViewSet(viewsets.ReadOnlyModelViewSet):
         record = AccountService.record_net_value(user=request.user)
         serializer = NetValueHistorySerializer(record)
         return Response(serializer.data)
+
+    @action(detail=False, methods=['get'])
+    def chart(self, request):
+        """净值曲线数据（最近N天，按时间正序，供图表使用）"""
+        from datetime import timedelta
+        from django.utils import timezone
+
+        days = int(request.query_params.get('days', 90))
+        since = timezone.now() - timedelta(days=days)
+        rows = list(
+            NetValueHistory.objects.filter(
+                user=request.user, record_time__gte=since
+            ).order_by('record_time')
+        )
+        data = [{
+            'time': r.record_time.strftime('%Y-%m-%d %H:%M'),
+            'total_eq': float(r.total_eq),
+            'pnl_ratio': float(r.pnl_ratio) if r.pnl_ratio else None,
+        } for r in rows]
+        return Response({'results': data})

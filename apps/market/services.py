@@ -64,7 +64,7 @@ class MarketDataService:
 
     @staticmethod
     def _parse_kline_item(instrument, bar, item, user=None) -> KLine:
-        """将 OKX 返回的单条 K 线数据解析并存入数据库"""
+        """将 OKX 返回的单条 K 线数据解析并存入数据库（供少量单条写入场景使用）"""
         env = MarketDataService._get_current_env(user=user)
         ts = datetime.fromtimestamp(int(item[0]) / 1000, tz=timezone.get_current_timezone())
         kline, created = KLine.objects.update_or_create(
@@ -84,6 +84,48 @@ class MarketDataService:
             }
         )
         return kline
+
+    @staticmethod
+    def _bulk_save_klines(instrument, bar, raw_items, user=None) -> int:
+        """批量解析并写入 K 线（高性能）。
+        逐条 update_or_create 在大批量时极慢（300条~70s），
+        改为 1 次 SELECT 查已存在 + 1 次 bulk_create。
+        返回实际插入的条数。
+        """
+        if not raw_items:
+            return 0
+        env = MarketDataService._get_current_env(user=user)
+
+        parsed = []
+        for item in raw_items:
+            ts = datetime.fromtimestamp(int(item[0]) / 1000, tz=timezone.get_current_timezone())
+            parsed.append(KLine(
+                instrument=instrument,
+                environment=env,
+                bar=bar,
+                timestamp=ts,
+                open=Decimal(str(item[1])),
+                high=Decimal(str(item[2])),
+                low=Decimal(str(item[3])),
+                close=Decimal(str(item[4])),
+                vol=Decimal(str(item[5])),
+                vol_ccy=Decimal(str(item[6])) if len(item) > 6 else None,
+                vol_ccy_quote=Decimal(str(item[7])) if len(item) > 7 else None,
+                confirm=int(item[8]) if len(item) > 8 else 1,
+            ))
+
+        # 一次查询已存在的时间戳，避免重复写入
+        ts_list = [p.timestamp for p in parsed]
+        existing = set(
+            KLine.objects.filter(
+                instrument=instrument, environment=env, bar=bar,
+                timestamp__in=ts_list
+            ).values_list('timestamp', flat=True)
+        )
+        to_insert = [p for p in parsed if p.timestamp not in existing]
+        if to_insert:
+            KLine.objects.bulk_create(to_insert, batch_size=500)
+        return len(to_insert)
 
     @staticmethod
     def fetch_klines(inst_id: str, bar: str = '1H', limit: int = 100,
@@ -152,9 +194,8 @@ class MarketDataService:
             if not items:
                 break
 
-            for item in items:
-                MarketDataService._parse_kline_item(instrument, bar, item, user=user)
-
+            # 批量写入（单次 SELECT + bulk_create，避免逐条 update_or_create 性能瓶颈）
+            inserted = MarketDataService._bulk_save_klines(instrument, bar, items, user=user)
             total_stored += len(items)
             remaining -= len(items)
 
@@ -195,6 +236,32 @@ class MarketDataService:
         df = pd.DataFrame(data)
         df.set_index('timestamp', inplace=True)
         return df
+
+    @staticmethod
+    def get_klines_cached(inst_id: str, bar: str = '1H', limit: int = 200,
+                          min_required: int = 60, user=None) -> 'pd.DataFrame':
+        """数据库优先读取K线；数据不足时后台异步拉取补齐并立即返回现有数据。
+        用户无需感知拉取过程：有数据立即返回，无数据触发 Celery 后台拉取（下次读取即有）。
+        """
+        import pandas as pd
+
+        env = MarketDataService._get_current_env(user=user)
+        count = KLine.objects.filter(
+            environment=env, instrument__inst_id=inst_id, bar=bar
+        ).count()
+
+        # 数据不足：触发异步拉取补齐（不阻塞请求），同时尝试同步拉取兜底
+        if count < min_required:
+            try:
+                from apps.market.tasks import async_fetch_klines_task
+                async_fetch_klines_task.delay(
+                    inst_id=inst_id, bar=bar, total=max(limit, 200)
+                )
+                logger.info(f'[{env}] {inst_id} {bar} 数据不足({count}<{min_required})，已触发异步补齐')
+            except Exception as e:
+                logger.warning(f'异步补齐 {inst_id} {bar} 失败: {e}')
+
+        return MarketDataService.get_klines_df(inst_id=inst_id, bar=bar, limit=limit, user=user)
 
     # ========== 行情快照 ==========
     @staticmethod

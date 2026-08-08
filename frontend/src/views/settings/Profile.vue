@@ -63,6 +63,7 @@
 </template>
 
 <script setup>
+defineOptions({ name: 'Profile' })
 import { reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth.js'

@@ -9,6 +9,9 @@ from rest_framework.pagination import PageNumberPagination
 
 from django.utils import timezone
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 class KLinePagination(PageNumberPagination):
     """K线接口默认返回更多数据以支撑图表展示"""
@@ -44,10 +47,20 @@ class InstrumentViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['post'])
     def sync(self, request):
-        """手动同步交易品种"""
+        """手动同步交易品种（异步任务执行，拉取全量可能耗时较长）"""
         inst_type = request.data.get('inst_type', 'SPOT')
-        count = MarketDataService.sync_instruments(inst_type)
-        return Response({'count': count, 'inst_type': inst_type})
+        try:
+            from apps.market.tasks import sync_instruments_task
+            task = sync_instruments_task.delay(inst_type=inst_type)
+            return Response({
+                'task_id': str(task.id),
+                'submitted': True,
+                'inst_type': inst_type,
+            }, status=202)
+        except Exception as e:
+            logger.warning(f'异步同步品种失败，回退同步执行: {e}')
+            count = MarketDataService.sync_instruments(inst_type)
+            return Response({'count': count, 'inst_type': inst_type})
 
 
 class KLineViewSet(viewsets.ReadOnlyModelViewSet):
@@ -68,7 +81,7 @@ class KLineViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['post'])
     def fetch(self, request):
-        """手动拉取K线（支持翻页拉取更多历史数据）"""
+        """手动拉取K线（后台异步执行，避免长耗时阻塞请求导致前端30s超时）"""
         inst_id = request.data.get('inst_id')
         bar = request.data.get('bar', '1H')
         limit = request.data.get('limit', 300)
@@ -77,11 +90,28 @@ class KLineViewSet(viewsets.ReadOnlyModelViewSet):
         if not inst_id:
             return Response({'error': 'inst_id is required'}, status=400)
 
-        count = MarketDataService.fetch_klines_history(
-            inst_id=inst_id, bar=bar, total=int(limit), user=request.user
-        )
-        env = MarketDataService._get_current_env(user=request.user)
-        return Response({'count': count, 'inst_id': inst_id, 'bar': bar, 'environment': env})
+        try:
+            # 优先提交 Celery 异步任务（OKX API + 数据库写入较耗时）
+            from apps.market.tasks import async_fetch_klines_task
+            task = async_fetch_klines_task.delay(
+                inst_id=inst_id, bar=bar, total=int(limit)
+            )
+            env = MarketDataService._get_current_env(user=request.user)
+            return Response({
+                'task_id': str(task.id),
+                'count': 0,
+                'inst_id': inst_id,
+                'bar': bar,
+                'environment': env,
+                'submitted': True,
+            })
+        except Exception:
+            # Celery 不可用时回退为同步执行（小批量）
+            count = MarketDataService.fetch_klines_history(
+                inst_id=inst_id, bar=bar, total=int(limit), user=request.user
+            )
+            env = MarketDataService._get_current_env(user=request.user)
+            return Response({'count': count, 'inst_id': inst_id, 'bar': bar, 'environment': env})
 
     @action(detail=False, methods=['get'])
     def scroll(self, request):
@@ -115,7 +145,7 @@ class KLineViewSet(viewsets.ReadOnlyModelViewSet):
         except Exception:
             env = 'demo'
 
-        qs = KLine.objects.filter(environment=env, instrument__inst_id=inst_id, bar=bar)
+        qs = KLine.objects.select_related('instrument').filter(environment=env, instrument__inst_id=inst_id, bar=bar)
 
         if after:
             try:
@@ -142,13 +172,18 @@ class KLineViewSet(viewsets.ReadOnlyModelViewSet):
         fetching = False
 
         # 只在数据库完全无数据时，后台异步触发 OKX 拉取（不阻塞请求）
+        # 防重复触发：2 分钟内同一 (inst_id, bar) 只允许触发一次，避免并发重复拉取
         if auto_fetch and len(klines) == 0:
-            fetching = True
-            from apps.market.tasks import async_fetch_klines_task
-            async_fetch_klines_task.delay(
-                inst_id=inst_id, bar=bar, total=500,
-                before=str(before) if before else ''
-            )
+            from django.core.cache import cache
+            fetch_key = f'kline_fetching:{env}:{inst_id}:{bar}'
+            if not cache.get(fetch_key):
+                cache.set(fetch_key, '1', timeout=120)  # 120 秒冷却
+                fetching = True
+                from apps.market.tasks import async_fetch_klines_task
+                async_fetch_klines_task.delay(
+                    inst_id=inst_id, bar=bar, total=500,
+                    before=str(before) if before else ''
+                )
 
         # has_more 基于数据库实际状态
         has_more = False
@@ -171,9 +206,27 @@ class KLineViewSet(viewsets.ReadOnlyModelViewSet):
                 timestamp__gt=latest.timestamp
             ).exists()
 
-        serializer = KLineSerializer(klines, many=True)
+        # 性能优化：直接用 values() 构建字典，跳过 DRF 慢序列化（604 条 ~37s -> <1s）
+        results = [
+            {
+                'id': k.id,
+                'instrument_id': k.instrument_id,
+                'inst_id': k.instrument.inst_id,
+                'environment': k.environment,
+                'bar': k.bar,
+                'timestamp': k.timestamp.isoformat(),
+                'open': str(k.open),
+                'high': str(k.high),
+                'low': str(k.low),
+                'close': str(k.close),
+                'vol': str(k.vol),
+                'vol_ccy': str(k.vol_ccy) if k.vol_ccy is not None else None,
+                'confirm': k.confirm,
+            }
+            for k in klines
+        ]
         return Response({
-            'results': serializer.data,
+            'results': results,
             'has_more': has_more,
             'fetching': fetching,
             'environment': env,
@@ -186,16 +239,37 @@ class TickerViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = TickerSerializer
     filterset_fields = ['instrument__inst_id', 'instrument__inst_type']
 
+    def get_queryset(self):
+        """支持 inst_ids 逗号分隔批量查询多个品种（用于自选品种统计）"""
+        qs = Ticker.objects.all()
+        inst_ids = self.request.query_params.get('inst_ids', '')
+        if inst_ids:
+            ids = [i.strip() for i in inst_ids.split(',') if i.strip()]
+            if ids:
+                qs = qs.filter(instrument__inst_id__in=ids)
+        return qs
+
     @action(detail=False, methods=['post'])
     def refresh(self, request):
-        """手动刷新行情"""
+        """手动刷新行情：先返回数据库中的快照（立即响应），后台异步从 OKX 刷新"""
         inst_id = request.data.get('inst_id')
         if not inst_id:
             return Response({'error': 'inst_id is required'}, status=400)
 
-        ticker = MarketDataService.sync_ticker(inst_id)
-        serializer = TickerSerializer(ticker)
-        return Response(serializer.data)
+        # 立即返回数据库现有快照（若无则返回空占位），不阻塞等待 OKX
+        ticker = Ticker.objects.filter(instrument__inst_id=inst_id).order_by('-updated_at').first()
+
+        # 后台异步刷新指定品种的 OKX 数据
+        try:
+            from apps.market.tasks import sync_tickers_task
+            sync_tickers_task.delay(inst_ids=[inst_id])
+        except Exception as e:
+            logger.warning(f'异步刷新行情失败: {e}')
+
+        if ticker:
+            serializer = TickerSerializer(ticker)
+            return Response({**serializer.data, 'refreshing': True})
+        return Response({'inst_id': inst_id, 'refreshing': True, 'error': '暂无本地行情，后台刷新中，请稍后重试'})
 
 
 class FundingRateViewSet(viewsets.ReadOnlyModelViewSet):
