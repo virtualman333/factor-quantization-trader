@@ -134,6 +134,11 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
         serializer.save(user=self.request.user)
 
     @action(detail=False, methods=['get'])
+    def meta(self, request):
+        """获取所有已注册策略的元信息（类型列表 + 参数 schema，供前端动态渲染）"""
+        return Response({'results': StrategyService.strategy_meta_list()})
+
+    @action(detail=False, methods=['get'])
     def instruments(self, request):
         """获取 OKX 交易产品列表（支持下拉选交易对）"""
         inst_type = request.query_params.get('inst_type', 'SWAP')

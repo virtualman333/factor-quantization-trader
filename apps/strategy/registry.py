@@ -11,7 +11,7 @@
 import importlib
 import logging
 import pkgutil
-from typing import Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Type
 
 from apps.strategy.base import BaseStrategy
 
@@ -78,7 +78,7 @@ class StrategyRegistry:
     def codes(self) -> List[str]:
         return list(self._strategies.keys())
 
-    def meta_list(self) -> List[Dict]:
+    def meta_list(self) -> List[Dict[str, Any]]:
         """所有策略的元信息列表（供前端策略类型下拉和动态参数表单）"""
         return [cls.meta() for cls in self.all()]
 

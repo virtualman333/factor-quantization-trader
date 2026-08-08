@@ -1,6 +1,7 @@
 import api from '@/utils/api'
 
 export function getStrategies(params) { return api.get('/strategy/configs/', { params }) }
+export function getStrategyMeta() { return api.get('/strategy/configs/meta/') }
 export function getStrategy(id) { return api.get(`/strategy/configs/${id}/`) }
 export function createStrategy(data) { return api.post('/strategy/configs/', data) }
 export function updateStrategy(id, data) { return api.put(`/strategy/configs/${id}/`, data) }

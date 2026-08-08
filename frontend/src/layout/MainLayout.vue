@@ -93,6 +93,15 @@
         />
         <span class="title">{{ route.meta.title || '' }}</span>
         <div class="header-right">
+          <!-- 消息铃铛 -->
+          <el-tooltip content="消息中心（Ctrl+N）" placement="bottom">
+            <el-badge :value="notifyStore.totalUnread || undefined" :hidden="!notifyStore.totalUnread" class="bell-badge">
+              <el-button size="small" circle @click="drawerVisible = !drawerVisible">
+                <el-icon><Bell /></el-icon>
+              </el-button>
+            </el-badge>
+          </el-tooltip>
+
           <el-tooltip :content="theme.isDark ? '切换到浅色模式' : '切换到深色模式'" placement="bottom">
             <el-button :icon="theme.isDark ? Sunny : Moon" circle @click="theme.toggle" />
           </el-tooltip>
@@ -181,6 +190,7 @@
       </el-main>
     </el-container>
   </el-container>
+  <NotificationCenter v-model="drawerVisible" />
 </template>
 
 <script setup>
@@ -188,11 +198,13 @@ import { ref, onMounted, onUnmounted, inject, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   Fold, Expand, ArrowDown, Loading, CircleCheck, CircleClose,
-  Connection, User, Sunny, Moon, QuestionFilled,
+  Connection, User, Sunny, Moon, QuestionFilled, Bell,
 } from '@element-plus/icons-vue'
 import { useConnectionStore } from '@/stores/connection.js'
 import { useRealtimeStore } from '@/stores/realtime.js'
 import { useAuthStore } from '@/stores/auth.js'
+import { useNotificationStore } from '@/stores/notifications.js'
+import NotificationCenter from '@/components/NotificationCenter.vue'
 import { useTheme } from '@/composables/useTheme.js'
 import { useKeyboard } from '@/composables/useKeyboard.js'
 import { useConfirm } from '@/composables/useConfirm.js'
@@ -203,9 +215,12 @@ const router = useRouter()
 const connectionStore = useConnectionStore()
 const realtimeStore = useRealtimeStore()
 const authStore = useAuthStore()
+const notifyStore = useNotificationStore()
 const theme = useTheme()
 const { confirm } = useConfirm()
 const { registerShortcut } = useKeyboard()
+
+const drawerVisible = ref(false)
 
 // 响应式断点
 const isMobile = ref(window.innerWidth <= 768)
@@ -271,6 +286,10 @@ registerShortcut({
   key: '?', shift: true, description: '快捷键说明',
   handler: () => shortcutHelp?.open(),
 })
+registerShortcut({
+  key: 'n', ctrl: true, description: '打开消息中心',
+  handler: () => { drawerVisible.value = !drawerVisible.value },
+})
 
 // 路由切换时，移动端自动收起侧边栏
 watch(() => route.path, () => {
@@ -282,6 +301,8 @@ onMounted(async () => {
   resizeHandler = onResize
   await connectionStore.init()
   realtimeStore.ensureOpen()
+  // 通知系统：启动轮询（每 30s 刷新 summary + list，检测到新消息自动 toast）
+  notifyStore.startPolling()
   pollTimer = setInterval(() => {
     connectionStore.checkConnection().catch(() => {})
   }, 30000)
@@ -290,6 +311,7 @@ onMounted(async () => {
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
   if (resizeHandler) window.removeEventListener('resize', resizeHandler)
+  notifyStore.stopPolling()
   realtimeStore.close()
 })
 </script>

@@ -6,6 +6,27 @@ from django.conf import settings
 from django.db import models
 
 
+class LazyChoices:
+    """懒加载 choices：既可迭代（通过 Django 字段检查）又可调用（flatchoices 动态获取）。
+    用于策略类型，使新增策略无需修改模型字段定义。
+    """
+
+    def __init__(self, fn):
+        self._fn = fn
+
+    def __iter__(self):
+        return iter(self._fn())
+
+    def __call__(self):
+        return self._fn()
+
+
+def _strategy_type_choices():
+    """动态读取策略注册表，新增策略无需改模型"""
+    from apps.strategy.registry import registry
+    return [(cls.code, cls.name) for cls in registry.all()]
+
+
 class StrategyConfig(models.Model):
     """策略配置"""
 
@@ -15,6 +36,8 @@ class StrategyConfig(models.Model):
         ('paused', '已暂停'),
         ('stopped', '已停止'),
     ]
+    # 策略类型：延迟到首次访问时从注册表动态生成
+    STRATEGY_TYPE_CHOICES = LazyChoices(_strategy_type_choices)
 
     DIRECTION_CHOICES = [
         ('long', '只做多'),
@@ -26,12 +49,6 @@ class StrategyConfig(models.Model):
         ('cash', '现金/现货'),
         ('cross', '全仓合约'),
         ('isolated', '逐仓合约'),
-    ]
-
-    STRATEGY_TYPE_CHOICES = [
-        ('factor_composite', '因子综合评分'),
-        ('trend_follow', '趋势跟踪'),
-        ('volume_breakout', '放量跟随'),
     ]
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,

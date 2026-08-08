@@ -139,7 +139,7 @@ class BacktestEngine:
 
         # 回测结束：未平仓持仓按最后价格强制结算
         for sym, pos in list(positions.items()):
-            self._force_close(sym, pos, df_cache, end_date, trades_log, capital)
+            capital, pnl = self._force_close(sym, pos, df_cache, end_date, trades_log, capital)
 
         # 计算指标
         metrics = self._compute_metrics(
@@ -218,7 +218,7 @@ class BacktestEngine:
         return equity
 
     def _force_close(self, sym, pos, df_cache, end_date, trades_log, capital):
-        """回测结束时强制平仓（按最后价格结算）"""
+        """回测结束时强制平仓（按最后价格结算），返回 (更新后capital, pnl)"""
         sym_df = df_cache.get(sym)
         if sym_df is not None and not sym_df.empty:
             last_close = float(sym_df.iloc[-1]['close'])
@@ -230,18 +230,19 @@ class BacktestEngine:
             proceeds = pos['amount'] * (price / pos['price'])
             fee = proceeds * self.fee_rate
             pnl = proceeds - pos['amount'] - fee - pos['fee']
-            capital[0] += (proceeds - fee)  # 通过 list 引用修改外部变量
+            capital += (proceeds - fee)
         else:
             cost = pos['amount'] * (price / pos['price'])
             fee = cost * self.fee_rate
             pnl = pos['amount'] - cost - fee - pos['fee']
-            capital[0] += (2 * pos['amount'] - cost - fee)
+            capital += (2 * pos['amount'] - cost - fee)
         trades_log.append({
             'timestamp': end_date, 'symbol': sym,
             'action': 'buy' if pos['side'] == 'short' else 'sell',
             'price': price, 'pnl': pnl, 'fee': fee,
-            'capital': capital[0], 'forced': True,
+            'capital': capital, 'forced': True,
         })
+        return capital, pnl
 
     @staticmethod
     def _compute_metrics(initial_capital, final_capital, equity_curve, trades_log,

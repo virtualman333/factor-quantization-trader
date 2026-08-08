@@ -19,7 +19,7 @@ class VolumeBreakoutStrategy(BaseStrategy):
     code = 'volume_breakout'
     name = '放量跟随'
     description = '放量上涨做多/放量下跌做空，含趋势过滤、ATR过滤、冷却与止损止盈'
-    MIN_BARS = 80
+    MIN_BARS = 60
 
     PARAM_SCHEMA = [
         ParamSchema('vol_ma_len', '成交量均线周期', 'int', 20, 2, 200, 1,

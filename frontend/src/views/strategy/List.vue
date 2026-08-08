@@ -179,11 +179,10 @@
         </el-form-item>
         <el-form-item>
           <template #label>策略类型 <term-tip term-key="strategy" /></template>
-          <el-select v-model="form.strategy_type">
-            <el-option label="因子综合评分" value="factor_composite" />
-            <el-option label="趋势跟踪" value="trend_follow" />
-            <el-option label="放量跟随" value="volume_breakout" />
+          <el-select v-model="form.strategy_type" style="width:100%">
+            <el-option v-for="o in STRATEGY_TYPE_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
           </el-select>
+          <div v-if="currentMeta" class="strategy-desc">{{ currentMeta.description }}</div>
         </el-form-item>
         <el-form-item label="品种类型">
           <el-select v-model="form.inst_type">
@@ -248,62 +247,30 @@
           <el-input v-model="factorsStr" placeholder="逗号分隔因子名 (momentum,rsi,macd)" />
         </el-form-item>
 
-        <el-divider content-position="left" v-if="form.strategy_type === 'volume_breakout'">放量跟随参数</el-divider>
-        <template v-if="form.strategy_type === 'volume_breakout'">
-          <el-form-item label="成交量均线周期">
-            <el-input-number v-model="form.params.vol_ma_len" :min="2" :max="200" />
-          </el-form-item>
-          <el-form-item label="放量倍数阈值">
-            <el-input-number v-model="form.params.vol_ratio" :min="1" :max="10" :step="0.1" />
-          </el-form-item>
-          <el-form-item label="趋势均线周期">
-            <el-input-number v-model="form.params.trend_ma_len" :min="5" :max="500" />
-            <span class="hint">区分大方向(震荡过滤)，如60=1小时</span>
-          </el-form-item>
-          <el-form-item label="ATR周期">
-            <el-input-number v-model="form.params.atr_len" :min="2" :max="100" />
-          </el-form-item>
-          <el-form-item label="最小波动阈值">
-            <el-input-number v-model="form.params.min_atr_factor" :min="0" :max="0.02" :step="0.0001" />
-            <span class="hint">ATR/价格 低于此值则震荡屏蔽</span>
-          </el-form-item>
-          <el-form-item label="冷却时间">
-            <el-input-number v-model="form.params.cooling_min" :min="1" :max="60" />
-            <span class="hint">同方向信号最小间隔(分钟)</span>
-          </el-form-item>
-          <el-form-item label="止损倍数">
-            <el-input-number v-model="form.params.stop_loss_mul" :min="0.1" :max="5" :step="0.1" />
-            <span class="hint">止损 = 倍数 × entry_atr</span>
-          </el-form-item>
-          <el-form-item label="止盈模式">
-            <el-select v-model="form.params.tp_mode" style="width:160px">
-              <el-option label="固定盈亏比" value="fixed" />
-              <el-option label="移动止盈" value="trailing" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="固定止盈盈亏比" v-if="form.params.tp_mode === 'fixed'">
-            <el-input-number v-model="form.params.tp_ratio" :min="0.5" :max="10" :step="0.1" />
-          </el-form-item>
-          <el-form-item label="移动止盈激活" v-if="form.params.tp_mode === 'trailing'">
-            <el-input-number v-model="form.params.trailing_trigger" :min="0.1" :max="2" :step="0.1" />
-            <span class="hint">盈利达 倍数×止损距离 启动追踪</span>
-          </el-form-item>
-          <el-form-item label="移动追踪幅度" v-if="form.params.tp_mode === 'trailing'">
-            <el-input-number v-model="form.params.trailing_factor" :min="0.1" :max="3" :step="0.1" />
-            <span class="hint">追踪幅度 = 因子 × entry_atr</span>
-          </el-form-item>
-          <el-form-item label="拒绝单根脉冲K">
-            <el-switch v-model="form.params.enhanced_no_single_pulse" />
-            <span class="hint">增强1：要求前一根成交量≥均量×1.2</span>
-          </el-form-item>
-          <el-form-item>
-            <template #label>单笔风险比例 <term-tip term-key="risk_per_trade" /></template>
-            <el-input-number v-model="form.params.risk_per_trade" :min="0.001" :max="0.05" :step="0.001" />
-            <span class="hint">仓位=资金×比例÷止损距离(0.5%~1%)</span>
-          </el-form-item>
-          <el-form-item label="单日最大止损">
-            <el-input-number v-model="form.params.daily_max_stop" :min="0" :max="10" />
-            <span class="hint">达上限当日停止开仓</span>
+        <!-- 策略专属参数：根据后端 meta schema 动态渲染 -->
+        <template v-if="currentMeta && currentMeta.params.length">
+          <el-divider content-position="left">策略参数</el-divider>
+          <el-form-item v-for="p in currentMeta.params" :key="p.key" :label="p.label">
+            <template v-if="p.type === 'bool'">
+              <el-switch v-model="form.params[p.key]" />
+              <span class="hint">{{ p.help }}</span>
+            </template>
+            <template v-else-if="p.type === 'choice'">
+              <el-select v-model="form.params[p.key]" style="width:200px">
+                <el-option v-for="o in p.options" :key="o.value" :label="o.label" :value="o.value" />
+              </el-select>
+              <span class="hint">{{ p.help }}</span>
+            </template>
+            <template v-else>
+              <el-input-number
+                v-model="form.params[p.key]"
+                :min="p.min"
+                :max="p.max"
+                :step="p.step"
+                :precision="p.type === 'int' ? 0 : undefined"
+              />
+              <span class="hint">{{ p.help }}</span>
+            </template>
           </el-form-item>
         </template>
       </el-form>
@@ -409,7 +376,7 @@ import {
   runSignals as runSignalsApi,
   executeSignals as execSignalsApi, runBacktest as runBacktestApi,
   optimizeParams as optimizeParamsApi, optimizeWeights as optimizeWeightsApi,
-  getBacktestTasks,
+  getBacktestTasks, getStrategyMeta,
 } from '@/api/strategy'
 import InstrumentSelect from '@/components/InstrumentSelect.vue'
 import { useStrategyStore } from '@/stores/strategy'
@@ -428,11 +395,11 @@ const showGuide = ref(!localStorage.getItem('strategy_guide_dismissed'))
 function openHelp() { shortcutHelp?.open() }
 function onGuideClose() { localStorage.setItem('strategy_guide_dismissed', '1'); showGuide.value = false }
 
-const STRATEGY_TYPE_OPTIONS = [
-  { label: '因子综合评分', value: 'factor_composite' },
-  { label: '趋势跟踪', value: 'trend_follow' },
-  { label: '放量跟随', value: 'volume_breakout' },
-]
+// 策略类型与参数元数据（从后端动态获取，新增策略无需改前端）
+const strategyMetaList = ref([])
+const STRATEGY_TYPE_OPTIONS = computed(() =>
+  strategyMetaList.value.map((m) => ({ label: m.name, value: m.code }))
+)
 const STATUS_OPTIONS = [
   { label: '草稿', value: 'draft' },
   { label: '运行中', value: 'active' },
@@ -536,23 +503,28 @@ const pageSize = ref(10)
 const form = ref({})
 const factorsStr = ref('')
 
-const DEFAULT_VOLUME_PARAMS = {
-  vol_ma_len: 20,
-  vol_ratio: 1.8,
-  trend_ma_len: 60,
-  atr_len: 14,
-  min_atr_factor: 0.0015,
-  cooling_min: 3,
-  stop_loss_mul: 1.2,
-  tp_mode: 'fixed',
-  tp_ratio: 1.5,
-  trailing_trigger: 0.5,
-  trailing_factor: 0.8,
-  enhanced_no_single_pulse: false,
-  risk_per_trade: 0.01,
-  daily_max_stop: 3,
+// 当前策略类型对应的 meta（含参数 schema）
+const currentMeta = computed(() =>
+  strategyMetaList.value.find((m) => m.code === form.value.strategy_type)
+)
+// 根据策略类型获取参数默认值（从 meta schema 动态生成）
+const defaultParamsFor = (type) => {
+  const meta = strategyMetaList.value.find((m) => m.code === type)
+  const defaults = {}
+  for (const p of (meta?.params || [])) {
+    if (p.default !== undefined && p.default !== null) defaults[p.key] = p.default
+  }
+  return defaults
 }
-const mergeVolumeParams = (raw) => ({ ...DEFAULT_VOLUME_PARAMS, ...(raw || {}) })
+// 合并用户已保存参数与默认参数
+const mergeParams = (type, raw) => ({ ...defaultParamsFor(type), ...(raw || {}) })
+
+const loadMeta = async () => {
+  try {
+    const res = await getStrategyMeta()
+    strategyMetaList.value = res.results || []
+  } catch (e) { /* 元数据加载失败时前端保持空列表 */ }
+}
 
 watch(() => form.value.inst_type, () => {
   form.value.symbols = []
@@ -666,15 +638,16 @@ const runWeightOptimize = async () => {
 const openDialog = (row) => {
   if (row) {
     isNew.value = false
-    form.value = { ...row, symbols: (row.symbols || []).slice(), params: mergeVolumeParams(row.params) }
+    form.value = { ...row, symbols: (row.symbols || []).slice(), params: mergeParams(row.strategy_type, row.params) }
     factorsStr.value = (row.factors || []).join(',')
   } else {
     isNew.value = true
-    const defaultForm = { strategy_type: 'trend_follow', inst_type: 'SWAP', symbols: [], params: { ...DEFAULT_VOLUME_PARAMS }, bar: '5m', direction: 'both', td_mode: 'cross', leverage: 3, initial_capital: 10000, order_size_pct: 0.1, max_positions: 5, stop_loss_pct: 0.05, take_profit_pct: 0.1, status: 'draft' }
+    const defaultForm = { strategy_type: strategyMetaList.value[0]?.code || 'factor_composite', inst_type: 'SWAP', symbols: [], params: {}, bar: '5m', direction: 'both', td_mode: 'cross', leverage: 3, initial_capital: 10000, order_size_pct: 0.1, max_positions: 5, stop_loss_pct: 0.05, take_profit_pct: 0.1, status: 'draft' }
+    defaultForm.params = defaultParamsFor(defaultForm.strategy_type)
     // 恢复未保存的草稿（表单持久化）
     const restored = loadDraft()
     if (restored && Object.keys(restored).length > 1) {
-      form.value = { ...defaultForm, ...restored, params: mergeVolumeParams(restored.params) }
+      form.value = { ...defaultForm, ...restored, params: mergeParams(restored.strategy_type || defaultForm.strategy_type, restored.params) }
       factorsStr.value = Array.isArray(restored.factors) ? restored.factors.join(',') : ''
       ElMessage.info('已恢复上次未保存的草稿')
     } else {
@@ -693,8 +666,8 @@ watch(form, () => {
 }, { deep: true })
 
 watch(() => form.value.strategy_type, (val) => {
-  if (val === 'volume_breakout' && (!form.value.params || Object.keys(form.value.params).length === 0)) {
-    form.value.params = { ...DEFAULT_VOLUME_PARAMS }
+  if (isNew.value && val) {
+    form.value.params = defaultParamsFor(val)
   }
 })
 
@@ -782,7 +755,8 @@ const runBacktest = async () => {
   btLoading.value = false
 }
 
-onMounted(() => {
+onMounted(async () => {
+  await loadMeta()
   load()
   // 恢复进行中的回测任务轮询
   loadBtTasks().then(() => {
@@ -801,6 +775,7 @@ onBeforeUnmount(stopTaskPolling)
 .filter-bar :deep(.el-card__body) { padding: 16px 16px 0; }
 .pager { margin-top: 16px; justify-content: flex-end; display: flex; }
 .hint { color: #909399; font-size: 12px; margin-left: 8px; }
+.strategy-desc { color: #909399; font-size: 12px; line-height: 1.5; margin-top: 4px; }
 .tasks-header { display: flex; align-items: center; justify-content: space-between; }
 .task-id { font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; color: #909399; }
 .grid-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; width: 100%; }
