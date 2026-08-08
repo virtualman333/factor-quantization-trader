@@ -615,13 +615,12 @@ const activate = async (id) => { await strategyStore.activate(id); ElMessage.suc
 const pause = async (id) => { await strategyStore.pause(id); ElMessage.success('已暂停'); load() }
 
 const remove = async (row) => {
-  const ok = await confirmDelete(row.name)
-  if (!ok) return
-  try {
+  const ok = await confirmDelete(row.name, async () => {
     await strategyStore.remove(row.id)
     ElMessage.success('已删除')
     load()
-  } catch (e) { ElMessage.error(e.message) }
+  })
+  if (!ok) return
 }
 
 const runSignals = async (id) => {
