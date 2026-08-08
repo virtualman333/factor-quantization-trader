@@ -236,15 +236,15 @@ const envType = computed(() => (connectionStore.environment === 'live' ? 'danger
 const chartRef = ref(null)
 const loading = ref(false)
 const fetchLoading = ref(false)
+// 快捷周期按钮 + 下拉补充周期（必须先于 bar 初始化定义）
+const quickBars = ['1m', '5m', '15m', '1H', '4H', '1D', '1W']
+const moreBars = ['3m', '30m', '2H', '6H', '12H', '1M']
+const bars = [...quickBars, ...moreBars]
 const instId = ref(route.query.inst_id || 'BTC-USDT')
 // 初始周期优先从 URL 读取（支持 /market/klines?bar=15m 直达）
 const urlBar = route.query.bar || '1H'
 const bar = ref(bars.includes(urlBar) ? urlBar : '1H')
 const preloadSize = ref(1000)
-// 快捷周期按钮 + 下拉补充周期
-const quickBars = ['1m', '5m', '15m', '1H', '4H', '1D', '1W']
-const moreBars = ['3m', '30m', '2H', '6H', '12H', '1M']
-const bars = [...quickBars, ...moreBars]
 
 // 主题与指标状态
 const chartTheme = ref(localStorage.getItem('kline_theme') || 'dark')
