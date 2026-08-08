@@ -14,6 +14,7 @@ urlpatterns = [
     path('api/account/', include('apps.account.urls')),
     path('api/strategy/', include('apps.strategy.urls')),
     path('api/orders/', include('apps.orders.urls')),
+    path('api/notifications/', include('apps.notifications.urls')),
 ]
 
 # ---- 性能监控路由（仅开发环境） ----

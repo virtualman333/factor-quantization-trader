@@ -20,9 +20,19 @@ from apps.market.models import Instrument
 from apps.market.services import MarketDataService
 from apps.strategy.models import StrategyConfig, SignalRecord, BacktestResult
 from apps.strategy.factors import FactorEngine, FactorResult
+from apps.notifications.services import NotificationService
 from core.okx_client import get_okx_client
 from core.risk_manager import RiskManager, PositionInfo
 from core.exceptions import StrategyError
+
+
+def _safe_push_signal(signal, user=None):
+    """信号通知推送（失败不影响主流程）。"""
+    try:
+        NotificationService.from_signal(signal, user=user)
+    except Exception as exc:  # pragma: no cover - 防御性
+        from logging import getLogger
+        getLogger(__name__).warning(f'推送信号通知失败: {exc}', exc_info=False)
 
 
 logger = logging.getLogger(__name__)
@@ -144,6 +154,7 @@ class StrategyService:
                     reason=f'综合评分: {composite_score:.2f}, 成分: {composite_signal}',
                 )
                 signals.append(signal)
+                _safe_push_signal(signal, user=user)
 
             except Exception as e:
                 logger.error(f'{symbol} 因子信号生成异常: {e}')
@@ -204,6 +215,7 @@ class StrategyService:
                     reason=reason,
                 )
                 signals.append(signal)
+                _safe_push_signal(signal, user=user)
 
             except Exception as e:
                 logger.error(f'{symbol} 趋势信号生成异常: {e}')
@@ -477,6 +489,7 @@ class StrategyService:
                     tp_mode=tp_mode,
                 )
                 signals.append(sig)
+                _safe_push_signal(sig, user=user)
 
             except Exception as e:
                 logger.error(f'{symbol} 放量跟随信号生成异常: {e}')
@@ -737,7 +750,7 @@ class StrategyService:
                                     tp.daily_stop_date = today
                                 tp.daily_stop_count += 1
                             tp.save()
-                            SignalRecord.objects.create(
+                            close_sig = SignalRecord.objects.create(
                                 strategy=strategy, inst_id=tp.inst_id,
                                 signal='close_long' if tp.side == 'long' else 'close_short',
                                 pos_side=pos_side, td_mode=strategy.td_mode,
@@ -746,6 +759,7 @@ class StrategyService:
                                 reason=f'监控触发出场: {exit_reason}',
                                 is_executed=True,
                             )
+                            _safe_push_signal(close_sig, user=user)
                             logger.info(f'监控平仓成功: {tp.inst_id} {tp.side} 原因={exit_reason} '
                                         f'止损计数={tp.daily_stop_count}')
                     except Exception as e:

@@ -15,8 +15,28 @@ from core.okx_client import get_okx_client
 from core.risk_manager import RiskManager
 from core.exceptions import OrderRejectedError
 from apps.orders.models import TradeOrder, OrderLog
+from apps.notifications.services import NotificationService
+from apps.notifications.models import Notification
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_notify_order(order, prev_state: str, user=None):
+    """订单状态变更通知推送（失败不影响主流程）。"""
+    try:
+        NotificationService.from_order_state(order, prev_state=prev_state, user=user)
+    except Exception as exc:  # pragma: no cover - 防御性
+        logger.warning(f'推送订单状态通知失败: {exc}', exc_info=False)
+
+
+def _safe_notify_risk(title: str, reason: str, *, order=None, strategy=None,
+                      user=None, extra=None):
+    """风控告警通知（失败不影响主流程）。"""
+    try:
+        NotificationService.from_risk(title=title, reason=reason, order=order,
+                                       strategy=strategy, user=user, extra=extra)
+    except Exception as exc:  # pragma: no cover - 防御性
+        logger.warning(f'推送风控通知失败: {exc}', exc_info=False)
 
 
 class OrderService:
@@ -60,11 +80,18 @@ class OrderService:
                 order_value = float(sz) * float(ticker['data'][0]['last'])
 
         if order_value > 0:
-            risk_mgr.pre_order_check(
-                inst_id=inst_id, side=side, sz=float(sz),
-                px=float(px or 0), account_balance=float('inf'),
-                current_positions={},
-            )
+            try:
+                risk_mgr.pre_order_check(
+                    inst_id=inst_id, side=side, sz=float(sz),
+                    px=float(px or 0), account_balance=float('inf'),
+                    current_positions={},
+                )
+            except OrderRejectedError as exc:
+                _safe_notify_risk(
+                    '下单被风控拦截', str(exc), user=user,
+                    extra={'inst_id': inst_id, 'side': side, 'sz': sz, 'px': px},
+                )
+                raise
 
         # 合约模式下设置杠杆
         if td_mode in ('cross', 'isolated') and leverage > 1:
@@ -113,12 +140,26 @@ class OrderService:
             trade_order.save()
             OrderLog.objects.create(order=trade_order, action='submitted',
                                      detail={'ord_id': trade_order.ord_id, 'result': result})
+            # 订单挂出成功通知（状态 live 没变，显式推送 submitted）
+            try:
+                NotificationService.push(
+                    Notification.TYPE.ORDER_STATE,
+                    '订单已挂出',
+                    f'订单 #{trade_order.id} ({trade_order.inst_id}) 已提交到交易所，单号 {trade_order.ord_id or "-"}',
+                    level=Notification.LEVEL.INFO, user=user,
+                    related_object=trade_order,
+                    target_route=f'/orders?tab=normal&detail={trade_order.id}',
+                )
+            except Exception:  # pragma: no cover
+                pass
             logger.info(f'订单提交成功: {trade_order.ord_id}')
         else:
+            prev = trade_order.state
             trade_order.state = 'failed'
             trade_order.save()
             OrderLog.objects.create(order=trade_order, action='failed',
                                      detail={'error': result.get('msg')})
+            _safe_notify_order(trade_order, prev_state=prev, user=user)
             raise OrderRejectedError(f'Order rejected: {result.get("msg")}')
 
         return {
@@ -161,12 +202,14 @@ class OrderService:
         )
 
         if result['code'] == '0':
+            prev_state = trade_order.state
             trade_order.state = 'canceled'
             trade_order.save()
             OrderLog.objects.create(
                 order=trade_order, action='canceled',
                 detail={'ord_id': ord_id, 'result': result}
             )
+            _safe_notify_order(trade_order, prev_state=prev_state, user=user)
             logger.info(f'订单撤单成功: {ord_id}')
 
         return {'ord_id': ord_id, 'state': trade_order.state, 'result': result}
@@ -218,6 +261,7 @@ class OrderService:
                     'fill_px': str(trade_order.fill_px) if trade_order.fill_px else None,
                 }
             )
+            _safe_notify_order(trade_order, prev_state=old_state, user=user)
             logger.info(f'订单 {ord_id} 状态变更: {old_state} -> {new_state}')
 
         return trade_order

@@ -35,6 +35,7 @@ INSTALLED_APPS = [
     'apps.account.AccountConfig',
     'apps.strategy.StrategyConfig',
     'apps.orders.OrdersConfig',
+    'apps.notifications.NotificationsConfig',
 ]
 
 MIDDLEWARE = [
