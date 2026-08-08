@@ -118,9 +118,13 @@ class OrderService:
             # 卖出数量不能超过可用持仓
             try:
                 sz_num = float(sz)
-                if sz_num > spot_pos:
+                # 浮点容差：与持仓几乎相等时（差<0.000001）自动用持仓数量，
+                # 避免精度差导致"全平"被误拒
+                if sz_num > spot_pos + 1e-6:
                     raise OrderRejectedError(
                         f'卖出数量 {sz_num} 超过现货持仓 {spot_pos}')
+                if sz_num > spot_pos:
+                    sz = str(round(spot_pos, 8))
             except ValueError:
                 pass
             pos_side = ''  # 现货不传 posSide
