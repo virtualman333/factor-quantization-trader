@@ -120,11 +120,17 @@ class OKXClient:
                 # （顶层 msg 常为笼统的 "All operations failed"）
                 error_msg = result.get('msg', 'Unknown OKX API error')
                 data = result.get('data') or []
+                has_detail = False
                 if data and isinstance(data, list) and data[0].get('sMsg'):
                     s_code = data[0].get('sCode', '')
                     s_msg = data[0].get('sMsg', '')
                     if s_code and s_code != '0':
                         error_msg = f'{s_msg} (code {s_code})'
+                        has_detail = True
+                if not has_detail and result.get('code') == '1':
+                    # OKX 限流/请求过频时返回笼统 code=1 且无 sMsg，
+                    # 补充友好提示，避免用户误以为代码问题
+                    error_msg = '请求过于频繁或 OKX 服务临时繁忙，请稍后重试'
                 logger.error(f'OKX API error: code={result.get("code")}, msg={error_msg}')
                 raise OKXClientError(f'OKX API error [{result.get("code")}]: {error_msg}')
             return result
