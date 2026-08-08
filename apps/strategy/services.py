@@ -83,6 +83,18 @@ class StrategyService:
                 # 方向过滤：只约束开仓，平仓不受限
                 final_signal = impl.filter_by_direction(sig.signal)
 
+                # 现货不支持做空：无持仓时 sell（开空）信号必须被抑制，
+                # 只有已有持仓时才允许卖出（平多）
+                if StrategyService._is_spot(strategy):
+                    if final_signal == 'sell' and not (position and position.get('side') == 'long'):
+                        logger.info(f'现货 {symbol} 无持仓，抑制做空信号 sell')
+                        continue
+                    if final_signal in ('close_long', 'close_short'):
+                        if final_signal == 'close_short' or not (position and position.get('side') == 'long'):
+                            # 现货只有多头持仓，close_short 无意义，无持仓时 close_long 也跳过
+                            logger.info(f'现货 {symbol} 无对应持仓，跳过平仓信号 {final_signal}')
+                            continue
+
                 current_price = float(df['close'].iloc[-1])
                 record = SignalRecord.objects.create(
                     strategy=strategy,
@@ -109,24 +121,48 @@ class StrategyService:
         return signals
 
     @staticmethod
+    def _is_spot(strategy: StrategyConfig, td_mode: str = '') -> bool:
+        """判断是否为现货交易（现货：td_mode=cash 或 inst_type=SPOT）"""
+        mode = (td_mode or strategy.td_mode or '').lower()
+        inst_type = (strategy.inst_type or '').upper()
+        return mode == 'cash' or inst_type == 'SPOT'
+
+    @staticmethod
     def _current_position(strategy: StrategyConfig, symbol: str, user=None) -> Optional[Dict]:
         """查询当前持仓状态（用于平仓/防重复开仓判断）。
 
         优先取 OKX 实际持仓；若 OKX 无持仓，但最近已有同向开仓信号
         （已执行或待执行），仍视为"持有"该方向，避免反复发同向开仓信号。
         """
-        # 1. OKX 实际持仓
+        client = get_okx_client(user=user)
+        spot = StrategyService._is_spot(strategy)
+
         try:
-            client = get_okx_client(user=user)
-            pos_resp = client.get_positions(inst_type=strategy.inst_type)
-            if pos_resp.get('code') == '0':
-                for p in pos_resp.get('data', []):
-                    if p.get('instId') == symbol and float(p.get('pos', 0)) != 0:
-                        return {'side': p.get('posSide'), 'pos': abs(float(p.get('pos', 0)))}
+            if spot:
+                # 现货：持仓 = 账户中该币种余额（现货无 get_positions 概念）
+                balance = client.get_account_balance()
+                if balance.get('code') == '0':
+                    base_ccy = symbol.split('-')[0] if '-' in symbol else symbol
+                    details = balance.get('data', [{}])[0].get('details', [])
+                    coin = next((d for d in details if d.get('ccy') == base_ccy), None)
+                    if coin:
+                        free = float(coin.get('availEq', coin.get('cashBal', 0)) or 0)
+                        frozen = float(coin.get('frozenBal', 0) or 0)
+                        total = free + frozen
+                        if total > 0:
+                            return {'side': 'long', 'pos': total,
+                                    'avail': free, 'spot': True}
+            else:
+                # 合约：用 OKX 持仓接口
+                pos_resp = client.get_positions(inst_type=strategy.inst_type)
+                if pos_resp.get('code') == '0':
+                    for p in pos_resp.get('data', []):
+                        if p.get('instId') == symbol and float(p.get('pos', 0)) != 0:
+                            return {'side': p.get('posSide'), 'pos': abs(float(p.get('pos', 0)))}
         except Exception as e:
             logger.warning(f'获取持仓失败: {e}')
 
-        # 2. 最近的开仓信号视为"虚拟持仓"（防重复开仓）
+        # 最近的开仓信号视为"虚拟持仓"（防重复开仓）
         from apps.strategy.models import SignalRecord
         from django.utils import timezone
         from datetime import timedelta
@@ -211,6 +247,23 @@ class StrategyService:
         if not side:
             logger.info(f'信号 #{signal.id} 为 hold，无需下单')
             return None
+
+        # ===== 现货风控：不能没仓位就卖；只有合约才可以开空 =====
+        is_spot = StrategyService._is_spot(strategy, td_mode)
+        if is_spot:
+            # 现货做空（无持仓的 sell）一律拒绝
+            if signal.signal == 'sell':
+                logger.warning(f'现货 {signal.inst_id} 不能做空，拒绝执行信号 #{signal.id}')
+                return None
+            # 现货平多（close_long）：必须有持仓，且卖出数量不超过持仓
+            if signal.signal in ('close_long', 'sell'):
+                spot_pos = StrategyService._current_position(strategy, signal.inst_id, user)
+                if not spot_pos or spot_pos.get('side') != 'long':
+                    logger.warning(f'现货 {signal.inst_id} 无持仓，拒绝卖出')
+                    return None
+                # 卖出数量 = 持仓数量（市价全平），不传 posSide
+                sz = str(round(float(spot_pos.get('pos')), 6))
+            pos_side = ''  # 现货不传 posSide
 
         try:
             result = client.place_order(

@@ -93,6 +93,37 @@ class OrderService:
                 )
                 raise
 
+        # 现货风控：不能没仓位就卖；只有合约才可以做空
+        is_spot = (td_mode or '').lower() == 'cash'
+        if is_spot and side.lower() == 'sell':
+            # 现货卖出必须有对应持仓（数量足够才可卖）
+            from apps.strategy.services import StrategyService
+            # 复用持仓查询：现货余额即持仓
+            spot_pos = None
+            try:
+                balance = client.get_account_balance()
+                if balance.get('code') == '0':
+                    base_ccy = inst_id.split('-')[0] if '-' in inst_id else inst_id
+                    details = balance.get('data', [{}])[0].get('details', [])
+                    coin = next((d for d in details if d.get('ccy') == base_ccy), None)
+                    if coin:
+                        free = float(coin.get('availEq', coin.get('cashBal', 0)) or 0)
+                        if free > 0:
+                            spot_pos = free
+            except Exception:
+                spot_pos = None
+            if not spot_pos:
+                raise OrderRejectedError(f'现货 {inst_id} 无持仓，不能卖出')
+            # 卖出数量不能超过可用持仓
+            try:
+                sz_num = float(sz)
+                if sz_num > spot_pos:
+                    raise OrderRejectedError(
+                        f'卖出数量 {sz_num} 超过现货持仓 {spot_pos}')
+            except ValueError:
+                pass
+            pos_side = ''  # 现货不传 posSide
+
         # 合约模式下设置杠杆
         if td_mode in ('cross', 'isolated') and leverage > 1:
             try:
