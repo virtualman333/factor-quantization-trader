@@ -20,6 +20,12 @@
           <el-tag :type="row.is_active ? 'success' : 'info'" size="small">{{ row.is_active ? '是' : '否' }}</el-tag>
         </template>
       </el-table-column>
+      <el-table-column label="操作" width="160" fixed="right" align="center">
+        <template #default="{ row }">
+          <el-button size="small" type="primary" :icon="TrendCharts" @click="openKline(row)">K线</el-button>
+          <el-button size="small" type="success" @click="quickTrade(row)">交易</el-button>
+        </template>
+      </el-table-column>
     </el-table>
     <div class="pagination">
       <el-pagination
@@ -36,13 +42,32 @@
 <script setup>
 defineOptions({ name: 'Instruments' })
 import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { getInstruments, syncInstruments as syncApi } from '@/api/market'
 import { ElMessage } from 'element-plus'
+import { Refresh, TrendCharts } from '@element-plus/icons-vue'
 
+const router = useRouter()
 const tableData = ref([])
 const loading = ref(false)
 const page = ref(1)
 const total = ref(0)
+
+/** 跳转到 K 线页，带上品种 */
+const openKline = (row) => {
+  router.push({
+    path: '/market/klines',
+    query: { inst_id: row.inst_id },
+  })
+}
+
+/** 跳转到 K 线页并打开快捷交易面板 */
+const quickTrade = (row) => {
+  router.push({
+    path: '/market/klines',
+    query: { inst_id: row.inst_id, trade: '1' },
+  })
+}
 
 const fetch = async () => {
   loading.value = true

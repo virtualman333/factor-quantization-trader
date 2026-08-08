@@ -165,13 +165,21 @@
           <span class="mobile-only">双指缩放 | 单指拖动查看更多</span>
         </div>
       </div>
-      <div class="chart-container">
-        <div ref="chartRef" class="chart-box touch-action-none"></div>
-        <!-- 加载状态 -->
-        <div v-if="loading && !dataSummary" class="chart-loading-mask">
-          <el-icon class="is-loading" :size="32"><Loading /></el-icon>
-          <span>加载K线数据...</span>
+      <div class="chart-area">
+        <div class="chart-container">
+          <div ref="chartRef" class="chart-box touch-action-none"></div>
+          <!-- 加载状态 -->
+          <div v-if="loading && !dataSummary" class="chart-loading-mask">
+            <el-icon class="is-loading" :size="32"><Loading /></el-icon>
+            <span>加载K线数据...</span>
+          </div>
         </div>
+        <!-- 快捷交易面板 -->
+        <TradePanel
+          :inst-id="instId"
+          :last-price="currentPrice"
+          class="trade-panel-wrap"
+        />
       </div>
     </el-card>
   </div>
@@ -184,6 +192,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { scrollKlines, fetchKlines as fetchApi } from '@/api/market'
 import { getBacktestDetail } from '@/api/strategy'
 import InstrumentSelect from '@/components/InstrumentSelect.vue'
+import TradePanel from '@/components/strategy/TradePanel.vue'
 import { useConnectionStore } from '@/stores/connection'
 import { useRealtimeStore } from '@/stores/realtime'
 import { ElMessage } from 'element-plus'
@@ -274,6 +283,15 @@ const backtestTrades = ref([])
 
 const dataSummary = ref(null)
 
+// 当前最新价格（传给交易面板）
+const currentPrice = computed(() => {
+  if (dataSummary.value?.close) return Number(dataSummary.value.close)
+  return lastTickerPrice.value || 0
+})
+
+// 实时 ticker 最新价
+const lastTickerPrice = ref(0)
+
 // ---------- 实时 K 线订阅 ----------
 const candleKey = computed(() =>
   instId.value && bar.value ? `candle${bar.value}:${instId.value}` : ''
@@ -281,6 +299,7 @@ const candleKey = computed(() =>
 
 const onCandleUpdate = (payload) => {
   if (!chart) return
+  lastTickerPrice.value = parseFloat(payload.close) || lastTickerPrice.value
   const data = {
     timestamp: payload.timestamp,
     open: parseFloat(payload.open),
@@ -294,13 +313,27 @@ const onCandleUpdate = (payload) => {
   updateSummary()
 }
 
+// 实时 ticker 最新价（供交易面板）
+const tickerKey = computed(() =>
+  instId.value ? `tickers:${instId.value}` : ''
+)
+const onTickerUpdate = (payload) => {
+  if (payload.last) lastTickerPrice.value = Number(payload.last)
+}
+
 const setupRealtime = () => {
   if (realtimeUnsubscribe) {
     realtimeUnsubscribe()
     realtimeUnsubscribe = null
   }
   if (!candleKey.value) return
-  realtimeUnsubscribe = realtimeStore.subscribe(candleKey.value, onCandleUpdate)
+  const unsubs = [
+    realtimeStore.subscribe(candleKey.value, onCandleUpdate),
+  ]
+  if (tickerKey.value) {
+    unsubs.push(realtimeStore.subscribe(tickerKey.value, onTickerUpdate))
+  }
+  realtimeUnsubscribe = () => unsubs.forEach((fn) => fn && fn())
 }
 
 const teardownRealtime = () => {
@@ -991,15 +1024,29 @@ html.dark .bar-btn.active {
   background: #409eff;
 }
 
+.chart-area {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+}
 .chart-container {
   position: relative;
   min-height: 400px;
+  flex: 1;
+  min-width: 0;
 }
 
 .chart-box {
   width: 100%;
   height: calc(100vh - 220px);
   min-height: 600px;
+}
+
+/* 快捷交易面板 */
+.trade-panel-wrap {
+  width: 280px;
+  flex-shrink: 0;
+  align-self: flex-start;
 }
 
 .chart-loading-mask {
@@ -1139,6 +1186,13 @@ html.dark .bar-btn.active {
   .chart-box {
     height: calc(100vh - 360px);
     min-height: 360px;
+  }
+  /* 移动端：交易面板下移，图表占满 */
+  .chart-area {
+    flex-direction: column;
+  }
+  .trade-panel-wrap {
+    width: 100%;
   }
   .toolbar-row {
     gap: 12px;
