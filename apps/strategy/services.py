@@ -695,7 +695,7 @@ th {{ background: #f5f7fa; }}
                 continue
             change = (last - open24) / open24 * 100
             rows.append({
-                'inst_id': t.inst_id,
+                'inst_id': t.instrument.inst_id,
                 'last': last,
                 'change_pct': round(change, 2),
                 'vol_24h': float(t.vol_24h) if t.vol_24h else 0,
