@@ -35,6 +35,11 @@ class BacktestEngine:
         self.slippage = slippage
         self.lookback = lookback  # 单次传入策略的最大K线数
         self.strategy_impl = None
+        # 现货判定：td_mode=cash 或 inst_type=SPOT
+        self.is_spot = (
+            (strategy_config.td_mode or '').lower() == 'cash'
+            or (strategy_config.inst_type or '').upper() == 'SPOT'
+        )
 
     # ---------- 主入口 ----------
     def run(self, start_date: datetime, end_date: datetime) -> dict:
@@ -89,7 +94,7 @@ class BacktestEngine:
                     context={'check_cooling': False, 'user': self.user,
                              'custom_factors': self._custom_factors()},
                 )
-                action = self._resolve_action(sig.signal, positions.get(sym))
+                action = self._resolve_action(sig.signal, positions.get(sym), self.is_spot)
                 if action is None:
                     continue
 
@@ -186,8 +191,12 @@ class BacktestEngine:
         ]
 
     @staticmethod
-    def _resolve_action(signal: str, position) -> str:
-        """信号 -> 交易动作（方向由策略 filter_by_direction 保证，平仓不受限）"""
+    def _resolve_action(signal: str, position, is_spot: bool = False) -> str:
+        """信号 -> 交易动作（方向由策略 filter_by_direction 保证，平仓不受限）。
+
+        现货风控：现货不能没仓位就卖，且只有合约才能开空——
+        现货模式下无持仓时 sell（开空）被禁止，只有持有多头才能卖出平仓。
+        """
         cur_side = position['side'] if position else None
         if signal == 'buy':
             if cur_side == 'short':
@@ -198,6 +207,9 @@ class BacktestEngine:
             if cur_side == 'long':
                 return 'close_long'
             if cur_side is None:
+                # 现货无持仓时禁止开空（卖空）
+                if is_spot:
+                    return None
                 return 'open_short'
         elif signal == 'close_long' and cur_side == 'long':
             return 'close_long'
