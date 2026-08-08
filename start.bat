@@ -52,10 +52,10 @@ if %errorlevel% neq 0 (
 )
 
 ::: 检查虚拟环境
-set VENV_DIR=venv
+set VENV_DIR=.venv
 if not exist "%VENV_DIR%\Scripts\activate.bat" (
     echo [提示] 未找到虚拟环境，正在创建...
-    python -m venv %VENV_DIR%
+    python -m .venv %VENV_DIR%
 )
 call "%VENV_DIR%\Scripts\activate.bat"
 

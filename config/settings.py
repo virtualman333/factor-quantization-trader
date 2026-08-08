@@ -89,10 +89,12 @@ DATABASES = {
 
 # Cache
 # NOTE: redis-py 已锁定 <5.0（兼容旧版 Redis 3.x，不发送 HELLO/RESP3 命令）
+_redis_password = env('REDIS_PASSWORD', default='')
+_redis_auth = f':{_redis_password}@' if _redis_password else ''
 CACHES = {
     'default': {
         'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-        'LOCATION': env('CELERY_BROKER_URL', default='redis://localhost:6379/2'),
+        'LOCATION': f'redis://{_redis_auth}127.0.0.1:6379/2',
     }
 }
 

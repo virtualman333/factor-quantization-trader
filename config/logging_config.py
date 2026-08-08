@@ -31,9 +31,9 @@ LOGGING = {
             'datefmt': '%Y-%m-%d %H:%M:%S',
         },
         'json': {
-            'format': '{"time": "{asctime}", "level": "{levelname}", "name": "{name}", "lineno": {lineno}, '
-                      '"process": {process}, "thread": {thread}, "message": "{message}"}',
-            'style': '{',
+            'format': '{"time": "%(asctime)s", "level": "%(levelname)s", "name": "%(name)s", "lineno": %(lineno)d, '
+                      '"process": %(process)d, "thread": %(thread)d, "message": "%(message)s"}',
+            'style': '%',
             'datefmt': '%Y-%m-%dT%H:%M:%S',
         },
     },
